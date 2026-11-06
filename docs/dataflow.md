@@ -1,9 +1,10 @@
 # Dataflow — audio_features
 
 The one picture of the platform. The contracts behind every box live in
-[`specs/music_data_platform_spec.yaml`](../specs/music_data_platform_spec.yaml); this page
-draws them and never restates them. Solid arrows are built in Phases 2–3; dashed arrows are the
-later slices (Phase 4 Spotify, Phase 5 audio features, Phase 6 presentation).
+[`specs/music_data_platform_spec.yaml`](../specs/music_data_platform_spec.yaml), the one home;
+this page draws them, and the notes below are pointers into it, not a second copy. Solid arrows
+are built in Phases 2–3; dashed arrows are the later slices (Phase 4 Spotify, Phase 5 audio
+features, Phase 6 presentation).
 
 ```mermaid
 flowchart LR
@@ -24,7 +25,7 @@ flowchart LR
         REP["report_music<br/>the marts the dashboard reads"]
     end
 
-    DBT["dbt Core + dbt-spark (session)<br/>models/&lt;layer&gt;/&lt;schema&gt;__&lt;table&gt;.sql<br/>tests = contracts · uv run dbt build --target dev|prd"]
+    DBT["dbt Core + dbt-spark (session)<br/>models/&lt;layer&gt;/&lt;source&gt;/&lt;schema&gt;__&lt;table&gt;.sql<br/>tests = contracts · uv run dbt build --target dev|prd"]
     AUDIT["/warehouse-audit<br/>freshness vs LATEST · layer presence and order ·<br/>quarantine ratios · match rate (Phase 4)"]
 
     subgraph outputs["Presentation"]

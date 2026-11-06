@@ -8,7 +8,7 @@
 spec:
   id: music-data-platform
   title: Music data platform — the MusicBrainz warehouse, its weekly refresh, and the joins to come
-  status: IN REVIEW            # DRAFT → IN REVIEW → APPROVED (only the owner's word) → BUILT
+  status: IN REVIEW            # DRAFT → IN REVIEW → APPROVED (the owner's merge of the spec PR is that word; /wrap-session flips it) → BUILT
   owner: Jordan Vercillo
   written: 2026-11-06
   roadmap_phase: "Phase 1 — The spec and the dataflow diagram (notes/roadmap.md)"
@@ -92,16 +92,20 @@ approach:
         every table name is PLURAL (artists, releases, dim_artists, fact_tracks), every struct
         is SINGULAR (artist, label, release_event), and every SQL table alias is plural. A table
         name is never reused across layers: cleansed pluralises, staging joins create new
-        names, modeled adds the type prefix. dbt model files are <schema>__<table>.sql (dbt
-        requires unique node names) with config(alias='<table>') so the relation is
-        <schema>.<table> with no prefix; ref() uses the file name. Columns: full words, never
-        acronyms; keys per key_naming.
+        names, modeled adds the type prefix. dbt model files live at
+        models/<layer>/<source>/<schema>__<table>.sql (dbt requires unique node names; the
+        source folder is where Phase 4's cleansed_spotify models go) with config(alias='<table>')
+        so the relation is <schema>.<table> with no prefix; ref() uses the file name. The project
+        overrides dbt's generate_schema_name macro to return the custom schema verbatim (dbt's
+        default would render <target.schema>_<custom>, e.g. dev_cleansed_musicbrainz). Columns:
+        full words, never acronyms; keys per key_naming.
       reasoning: >
         Owner, verbatim: "in big query our modeling pattern we've done in the past is
         billing_project (atz-data-hub-dev, atz-data-hub-qa, atz-data-hub-prd), then the layer
         and folder in the layer (staged_distribution, modeled_distribution, cleansed_musicbrainz)
-        then the table name. So the full path would be atz-data-hub-prd.cleansed_musicbrainz.
-        artists for example. Can we adopt a similar strategy here." and "all table names must be
+        then the table name. So the full path would be
+        atz-data-hub-prd.cleansed_musicbrainz.artists for example.
+        Can we adopt a similar strategy here." and "all table names must be
         plural, all structs are singular. All table alias are plural. We should never have the
         same table name between layers." The testing seat found that dbt refuses two models
         with the same bare name, so the file carries the schema and the alias keeps the table
@@ -250,16 +254,22 @@ approach:
         data/<environment>/ingest/musicbrainz/_manifest.json holds dump ("<YYYYMMDD-HHMMSS>",
         the audit's contract), schema_sequence, replication_sequence, started_at and loaded_at
         (UTC), duration_seconds, archives (name, sha256, bytes) and tables (table, archive,
-        member, rows). All fields are mandatory. The fetch also appends a copy to
-        data/<environment>/ingest/musicbrainz/_manifest_history/<dump>.json (an underscore
-        folder the audit skips) so warehouse_refreshes keeps one row per loaded dump across
-        refreshes and across a rebuild from an empty layer set (PROPOSED).
+        member, rows). All fields are mandatory; schema_sequence and replication_sequence are
+        read from the SCHEMA_SEQUENCE and REPLICATION_SEQUENCE files at the root of the core
+        archive (the documentation archive carries the same files and is not downloaded). The
+        fetch also appends one row per loaded dump (the manifest flattened, every column a
+        string, archives and tables as JSON strings) to the ingest table
+        data/<environment>/ingest/musicbrainz/manifest_history/ (PROPOSED), a regular ingest
+        table the audit sees and cleansed_musicbrainz.refresh_manifests reads, so
+        warehouse_refreshes rides the layers like every other mart and keeps one row per dump
+        across refreshes and across a rebuild of cleansed..report.
       reasoning: >
         The audit already reads "dump"; the rest makes a refresh auditable without re-opening
-        the archives; duration_seconds is the home of the wall-clock metric and the history
-        folder is the home of the refresh mart (the manifest alone is one file overwritten per
-        refresh, so the mart could never hold more than one row). One home per fact: the audit
-        never grows a second manifest format.
+        the archives; duration_seconds is the home of the wall-clock metric and manifest_history
+        is the home of the refresh mart (the manifest alone is one file overwritten per
+        refresh, so the mart could never hold more than one row). The code-reviewer seat moved
+        the history from a JSON folder to an ingest table so no mart skips the layers. One home
+        per fact: the audit never grows a second manifest format.
     star_schema:
       choice: >
         Phase 3, MusicBrainz only, all names plural. Dims: dim_artists, dim_recordings,
@@ -389,16 +399,19 @@ tasks:
       run scripts with `sys.executable -I`, which ignores PEP 723 headers. Create
       dbt_project.yml (name audio_features, model-paths models/), profiles.yml committed in the
       repo with method session and targets dev and prd (no secrets exist), models/ with the four
-      layer folders, +schema <layer>_<source> per folder, +file_format parquet and a
-      +location_root built from the data_root var (default data/<target>/) so a test can point
-      a build at tmp_path. Create src/audio_features/ with spark_session.py (the one builder:
+      layer folders and a musicbrainz source folder in each, +schema <layer>_<source> per source
+      folder, a generate_schema_name macro override that returns the custom schema verbatim,
+      +file_format parquet and a +location_root built from the data_root var (default
+      data/<target>/) so a test can point a build at tmp_path. Create src/audio_features/ with spark_session.py (the one builder:
       local[*], warehouse dir under data/<environment>/, Derby metastore under metastore_db/
       which is gitignored; PYSPARK_PYTHON set here, never globally) and layers.py (the layer
       and environment paths, the LAYERS tuple shared with the audit). Prove it: `uv run dbt
       debug --target dev` → exit 0, All checks passed!; two models with the same bare name in
       two folders → `uv run dbt parse` fails with the duplicate-name error; the aliased pair
       (cleansed_musicbrainz__artists.sql, staging_musicbrainz__artists_with_types.sql, say) →
-      `dbt build` writes both folders under data/dev/ with bare table names.
+      `dbt build` writes both folders under data/dev/ with bare table names and
+      `dbt show --inline "select 1 from {{ ref('cleansed_musicbrainz__artists') }}"` resolves
+      the relation cleansed_musicbrainz.artists (no target-schema prefix).
   task_3:
     name: The weekly fetch — scripts/fetch_musicbrainz.py and the table allowlist (Phase 2, slice 2)
     details: |
@@ -467,8 +480,9 @@ tasks:
       precision and bridge_release_groups_genres with genre_rank = 1), recording_length_bands
       (one row per band; dim_recordings.length_milliseconds; PROPOSED bands under 2:00, 2–3,
       3–4, 4–6, 6–10, over 10 minutes), labels_by_country (one row per country; dim_areas'
-      country roll-up), warehouse_refreshes (one row per loaded dump; read from
-      _manifest_history/). Each mart is denormalised, aggregated and small enough for DuckDB to
+      country roll-up), warehouse_refreshes (one row per loaded dump; from
+      cleansed_musicbrainz.refresh_manifests, which reads ingest manifest_history). Each mart is
+      denormalised, aggregated and small enough for DuckDB to
       read whole in the dashboard. The marts are re-specced with the dashboard wireframe at the
       start of Phase 6.
   task_7:
@@ -526,13 +540,14 @@ reference_materials:
     - "https://github.com/metabrainz/musicbrainz-server — lib/MusicBrainz/Server/Constants.pm (CORE_TABLE_LIST, DERIVED_TABLE_LIST, CAA_TABLE_LIST), admin/sql/CreateTables.sql, admin/sql/caa/CreateTables.sql, lib/MusicBrainz/Script/DatabaseDump.pm (tar member naming, zero-row omission)"
     - "https://docs.getdbt.com/reference/warehouse-setups/spark-setup — dbt-spark, session method"
   notes:
-    - "mbdump-documentation.tar.bz2 (26 KB) carries SCHEMA_SEQUENCE, REPLICATION_SEQUENCE and TIMESTAMP for the dump; the fetch script may read these into the manifest without downloading the core archive first."
+    - "SCHEMA_SEQUENCE, REPLICATION_SEQUENCE and TIMESTAMP sit at the root of every archive, the core one included (verified in mbdump-documentation.tar.bz2, 26 KB, on 2026-11-06); the fetch reads them from the core archive it already downloads."
 
 success_criteria:
   minimum: >
     Phase 1: validate_spec exits 0; `git ls-files docs/dataflow.md` prints the path; every
     open_questions entry has a non-empty owner and a status that names a decision or a date
-    (`grep -cE "status:.*(to be decided|unknown)"` prints 0); the PR is reviewed and merged. Phase 2: the fetch lands the allowlist as Parquet with a manifest (verification
+    (`grep -cE "status:.*(to be decided|unknown|TBD)"` prints 0); the PR is reviewed and
+    merged. Phase 2: the fetch lands the allowlist as Parquet with a manifest (verification
     lines), `uv run dbt build --select cleansed staging --target dev` exits 0, and the online
     audit reports only a possibly stale dump.
   good: >
@@ -553,7 +568,7 @@ verification:
   - "CI, Phase 2 onward: uv run pytest tests/test_dbt_synthetic_build.py -q → passed (writes a tiny ingest layer to tmp_path, runs dbt build with data_root pointed there, then the audit --root tmp_path --offline → LAYER_MISSING false and inventory.quarantine populated)"
   - "local, Phase 2 onward: uv run dbt debug --target dev → exit 0, All checks passed!"
   - "local, Phase 2 onward: run uv run scripts/fetch_musicbrainz.py --environment dev twice; the second run exits 0 within seconds, prints the early-exit line naming the dump, and the manifest's loaded_at is unchanged"
-  - "local, Phase 2 onward: uv run dbt build --target dev → exit 0 and final line `Done. PASS=<n> WARN=0 ERROR=0 SKIP=0 TOTAL=<n>`"
+  - "local, Phase 2 onward: uv run dbt build --target dev → exit 0 and the final `Done.` line shows WARN=0 ERROR=0 SKIP=0 (dbt 1.9+ also prints NO-OP=0; PASS and TOTAL are equal)"
   - "local, Phase 2 onward: uv run .claude/skills/warehouse-audit/audit_warehouse.py --environment dev (online) → inventory.dump equals inventory.latest, flags.DUMP_STALE false, NO_DATA, NO_MANIFEST, LAYER_MISSING false, every inventory.quarantine ratio < 0.01"
 
 known_pitfalls:
@@ -624,7 +639,7 @@ decision_log:
     ruling: data-modeling review — all eight PROPOSED additions accepted as defaults (artist-credit dim + bridge, partial-date rule, genre bridges + primary genre, release events struct, allowlist fixes, dropped-column list + quarantine ceiling, lineage columns, Various Artists exclusion + length bands); P1–P4 and P8 re-confirmed at the 20% checkpoint
     why: "owner: accept all eight as PROPOSED defaults (REC accepted); they sit inside the rulings above and leave no silent gap"
   - date: 2026-11-06
-    ruling: testing review — dbt files <schema>__<table>.sql with alias; quarantine ratio lives in the audit (HARNESS part of task_3); started_at + duration_seconds in the manifest; _manifest_history/<dump>.json for the refresh mart
+    ruling: testing review — dbt files <schema>__<table>.sql with alias; quarantine ratio lives in the audit (HARNESS part of task_3); started_at + duration_seconds in the manifest; a refresh history for the refresh mart (the code-reviewer seat then placed it as the ingest table manifest_history so no mart skips the layers)
     why: "dbt needs unique node names (verified constraint); numbers need homes in the same breath (REC accepted)"
   - date: 2026-11-06
     ruling: naming_and_layout — environment / layer_source / table mirrored on disk; dbt schema <layer>_<source>; plural tables, singular structs, plural aliases; a name never repeats across layers

@@ -24,7 +24,7 @@ import sys
 PROTECTED = (
     ("data/",            "rebuildable data: dumps and Parquet layers are written by the pipeline, never by hand (CLAUDE.md rule 2)"),
     (".venv/",           "the uv-managed environment; change pyproject.toml and run `uv sync`"),
-    ("spark-warehouse/", "Spark's own output; rebuilt by the notebooks"),
+    ("spark-warehouse/", "Spark's own output; rebuilt by dbt"),
     ("metastore_db/",    "Spark's Derby metastore; never hand-edited"),
 )
 PROTECTED_SUFFIXES = (

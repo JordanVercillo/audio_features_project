@@ -26,9 +26,9 @@ The spec or brief (a batch PR has none: its items table stands in), the diff
 3. **The repo's standards** (`CLAUDE.md` ground rules and any coding standard it names): a second
    copy of a rule, a bare tunable in logic, a public type without its doc comment, a secret with a
    hardcoded fallback. **This repo's data standard:** every layer is Parquet under
-   `data/<layer>/<table>/`; a fact table states its grain in one sentence; lineage columns (source
-   dump, load time) ride every layer; a notebook runs clean top to bottom and reads only the layer
-   below it; the MusicBrainz MBID is the key that links Spotify and audio features back to the
+   `data/<environment>/<layer>/<source>/<table>/`; a fact table states its grain in one sentence; lineage columns (source_system,
+   source_batch, loaded_at) ride every layer from cleansed onward; a dbt model reads only ref()s
+   from its own layer or the one below it, never a raw path; the MusicBrainz MBID is the key that links Spotify and audio features back to the
    base, never a second ID system; nothing reads the network in a unit test.
 4. **Proof:** a new check cites the run where it failed on purpose. An expected value recomputed
    from the code under test, or a filter test asserting only what was removed, proves nothing. An

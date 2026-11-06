@@ -16,7 +16,7 @@ dependency. It is NOT the website: vercilloanalytics.com is rendered by `C:\User
 1. **Python runs through uv.** `uv run <script>` from the repo root — never bare `python`, never
    an activated venv. PySpark 3.5.6 on CPython 3.11, on both Windows and WSL, stood up with the
    `/spark-env` playbook. Transformations are dbt models (dbt Core + dbt-spark, `session`
-   method, on that local Spark) under `models/<layer>/`, one SQL model per table as
+   method, on that local Spark) under `models/<layer>/<source>/`, one SQL model per table as
    `<layer>_<source>__<table>.sql` aliased to the bare table, run by `uv run dbt build --target
    dev|prd`; the ingest is a Python script. Notebooks under `notebooks/` are exploration only
    and never a layer's writer. The naming and SQL conventions (plural tables, singular structs,
@@ -42,7 +42,7 @@ dependency. It is NOT the website: vercilloanalytics.com is rendered by `C:\User
 | Get back up to speed & continue (start here) | `/resume` (orients, writes the session brief, hands it to `/orchestrator`) |
 | Lead this session's work from its brief | `/orchestrator` + the brief path or a one-line goal |
 | Work the warehouse roadmap as a senior partner | `/warehouse-partner` (recall → audit → adapt → work → update memory) |
-| Is the warehouse current and intact? | `/warehouse-audit` (dump freshness vs LATEST, layer presence, row-count parity) |
+| Is the warehouse current and intact? | `/warehouse-audit` (dump freshness vs LATEST, layer presence and order; row-count parity until Phase 2 moves it to dbt tests) |
 | Design a feature before building it | `/spec` + one-line idea (`/interview-me` rules its open questions) |
 | End a session that did meaningful work | `/wrap-session` (reviews the brief, saves memory, tidies, runs `/retro` when the harness fought back) |
 | Stop mid-task and continue in a fresh session | `/handoff` |
@@ -72,8 +72,8 @@ specifics. A new skill or seat gets its routing row here.
 | `docs/` | `dataflow.md` (the Mermaid dataflow diagram) and design notes |
 | `scripts/` | single-file tools with PEP 723 headers (`harness_guards.py` today; `fetch_musicbrainz.py`, the idempotent weekly fetch, in Phase 2) |
 | `src/audio_features/` | the first-party package: the Spark session builder, layer helpers, the MusicBrainz table allowlist, the Spotify and librosa clients (created in Phase 2) |
-| `models/` | the dbt project: `cleansed/`, `staging/`, `modeled/`, `report/`, one SQL model per table, tests as contracts (created in Phase 2) |
-| `dashboard/` | the Streamlit app over `data/report/` via DuckDB (Phase 6) |
+| `models/` | the dbt project: `<layer>/<source>/<layer>_<source>__<table>.sql`, one SQL model per table, tests as contracts (created in Phase 2) |
+| `dashboard/` | the Streamlit app over `data/prd/report/music/` via DuckDB (Phase 6) |
 | `notebooks/` | exploration only; never a layer's writer |
 | `data/` | gitignored: `data/<environment>/<layer>/<source>/<table>/` Parquet + the dumps; `data/<environment>/ingest/musicbrainz/_manifest.json` records which dump is loaded |
 | `tests/` | pytest, synthetic data, no network |
