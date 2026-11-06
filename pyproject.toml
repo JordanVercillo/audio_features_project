@@ -1,0 +1,35 @@
+# pyproject.toml — uv is the source of truth (uv.lock pins the graph). This is an application,
+# not an installable library: modules import as `audio_features.<x>` from src/ (Phase 2).
+[project]
+name = "audio-features"
+version = "0.1.0"
+description = "Weekly-refreshed MusicBrainz warehouse in Spark notebooks, joined to Spotify history and local audio features."
+authors = [{ name = "Jordan Vercillo" }]
+readme = "README.md"
+# pyspark 3.5.x predates Python 3.12+ quirks on Windows workers; both hosts stay on 3.11 (/spark-env).
+requires-python = ">=3.11,<3.12"
+dependencies = [
+    "pyarrow>=14.0.0",   # the Parquet engine; every layer is Parquet
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.6",
+    "pyyaml>=6",
+]
+
+[tool.uv]
+package = false
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+# Explicit so the rule set is the repo's, not the ruff release's. Hooks and audits catch broad
+# exceptions on purpose (a hook must never block on its own failure), so BLE/S are not selected.
+select = ["E4", "E7", "E9", "F", "I", "B", "UP"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

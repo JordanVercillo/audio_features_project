@@ -1,0 +1,27 @@
+# Secrets & token caches (NEVER commit)
+.env
+.cache/
+
+# Claude Code machine-local settings
+.claude/settings.local.json
+
+# Rebuildable artifacts (the script is the artifact — data/outputs stay untracked)
+data/
+spark-warehouse/
+metastore_db/
+derby.log
+outputs/
+*.duckdb
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.ipynb_checkpoints/
+.pytest_cache/
+.ruff_cache/
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
