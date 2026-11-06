@@ -1,4 +1,4 @@
-# audio_features — a data-platform portfolio project: a weekly-refreshed MusicBrainz warehouse (ingest → cleansed → staging → modeled → report) built in Spark notebooks, joined to Jordan's Spotify history and local audio features, and presented in a dashboard and a dedicated section of vercilloanalytics.com
+# audio_features — a data-platform portfolio project: a weekly-refreshed MusicBrainz warehouse (ingest → cleansed → staging → modeled → report) built as dbt models on local Spark, joined to Jordan's Spotify history and local audio features, and presented in a dashboard and a dedicated section of vercilloanalytics.com
 
 ## ⏭️ RESUME HERE (read first, every session)
 
@@ -15,11 +15,19 @@ dependency. It is NOT the website: vercilloanalytics.com is rendered by `C:\User
 
 1. **Python runs through uv.** `uv run <script>` from the repo root — never bare `python`, never
    an activated venv. PySpark 3.5.6 on CPython 3.11, on both Windows and WSL, stood up with the
-   `/spark-env` playbook. Transformations live in notebooks under `notebooks/`, one per layer hop,
-   and every notebook runs clean top to bottom from an empty kernel.
+   `/spark-env` playbook. Transformations are dbt models (dbt Core + dbt-spark, `session`
+   method, on that local Spark) under `models/<layer>/`, one SQL model per table as
+   `<layer>_<source>__<table>.sql` aliased to the bare table, run by `uv run dbt build --target
+   dev|prd`; the ingest is a Python script. Notebooks under `notebooks/` are exploration only
+   and never a layer's writer. The naming and SQL conventions (plural tables, singular structs,
+   full-word aliases, a name never repeated across layers, DRY, structs where they fit, the
+   simplest readable option) are ruled in `specs/music_data_platform_spec.yaml` →
+   `naming_and_layout` and `sql_conventions`.
 2. **`data/` is rebuildable, gitignored and never hand-edited.** It holds the MusicBrainz dumps and
-   every Parquet layer (`data/<layer>/<table>/`, layers: ingest, cleansed, staging, modeled,
-   report); the notebooks and scripts are the artifact. The project's page on
+   every Parquet layer at `data/<environment>/<layer>/<source>/<table>/` (environments: dev,
+   prd; layers: ingest, cleansed, staging, modeled, report), the local mirror of
+   `project.layer_source.table`; the models and scripts are the artifact. `main` is the dev
+   line and the knowledge base; `prd` is promoted from it by PR. The project's page on
    vercilloanalytics.com is published through `webresume` (`projects/<slug>.md` there, then its
    `uv run build.py`); its generated `site/` is never hand-edited.
 3. **Secrets by name only.** Spotify is PKCE: no client secret exists anywhere in this project.
@@ -46,8 +54,8 @@ dependency. It is NOT the website: vercilloanalytics.com is rendered by `C:\User
 
 **Roster** (domain seats, `.claude/agents/`; advise by default, implement in-lane on a hand-off,
 never commit): `data-modeling-expert` (grain, layer contracts, star schema) ·
-`sql-expert` (Spark SQL against the layers) · `python-expert` (uv, the package, notebooks' helper
-code) · `testing-expert` (pytest, the audit script, what "verified" means) ·
+`sql-expert` (Spark SQL and the dbt models against the layers) · `python-expert` (uv, the package,
+the scripts) · `testing-expert` (pytest, the audit script, what "verified" means) ·
 `code-reviewer` (the mandatory PR gate).
 
 The harness skills under `.claude/skills/` were pasted from the harness kit and adapted here; an
@@ -60,10 +68,12 @@ specifics. A new skill or seat gets its routing row here.
 |---|---|
 | `notes/` | PROJECT_CONTEXT (memory) · journal (numbered lessons) · roadmap (plan) |
 | `.claude/` | agents · hooks · rules · skills · settings (the hooks, the allowlist) — this repo's part of the harness |
-| `specs/` | validated implementation contracts (`/spec`); the first is the platform spec (Phase 1) |
-| `docs/` | the dataflow diagram and design notes (Phase 1) |
-| `scripts/` | single-file tools with PEP 723 headers (`harness_guards.py` today; the weekly MusicBrainz fetch next) |
-| `src/audio_features/` | the first-party package: the Spark session builder, layer helpers, the Spotify and librosa clients (created in Phase 2) |
-| `notebooks/` | one notebook per layer hop, the transformations in the open (created in Phase 2) |
-| `data/` | gitignored: MusicBrainz dumps + the Parquet layers; `data/ingest/_manifest.json` records which dump is loaded |
+| `specs/` | validated implementation contracts (`/spec`); `music_data_platform_spec.yaml` is the platform spec (Phase 1) with its decision log |
+| `docs/` | `dataflow.md` (the Mermaid dataflow diagram) and design notes |
+| `scripts/` | single-file tools with PEP 723 headers (`harness_guards.py` today; `fetch_musicbrainz.py`, the idempotent weekly fetch, in Phase 2) |
+| `src/audio_features/` | the first-party package: the Spark session builder, layer helpers, the MusicBrainz table allowlist, the Spotify and librosa clients (created in Phase 2) |
+| `models/` | the dbt project: `cleansed/`, `staging/`, `modeled/`, `report/`, one SQL model per table, tests as contracts (created in Phase 2) |
+| `dashboard/` | the Streamlit app over `data/report/` via DuckDB (Phase 6) |
+| `notebooks/` | exploration only; never a layer's writer |
+| `data/` | gitignored: `data/<environment>/<layer>/<source>/<table>/` Parquet + the dumps; `data/<environment>/ingest/musicbrainz/_manifest.json` records which dump is loaded |
 | `tests/` | pytest, synthetic data, no network |

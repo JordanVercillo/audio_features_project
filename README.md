@@ -2,7 +2,7 @@
 
 A data-platform portfolio project by Jordan Vercillo. It builds a weekly-refreshed warehouse from the
 public [MusicBrainz](https://musicbrainz.org/) full export, layer by layer (ingest → cleansed →
-staging → modeled → report) in Spark notebooks, then joins Jordan's own Spotify listening history
+staging → modeled → report) as dbt models on local Spark, then joins Jordan's own Spotify listening history
 and locally extracted audio features (librosa) to it, and presents the result in a dashboard and a
 dedicated section of [vercilloanalytics.com](https://vercilloanalytics.com). The point is to show,
 end to end and in the open, how a world-class integration is built: a dataflow diagram, layer

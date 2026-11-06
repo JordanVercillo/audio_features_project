@@ -3,7 +3,7 @@
 [project]
 name = "audio-features"
 version = "0.1.0"
-description = "Weekly-refreshed MusicBrainz warehouse in Spark notebooks, joined to Spotify history and local audio features."
+description = "Weekly-refreshed MusicBrainz warehouse as dbt models on local Spark, joined to Spotify history and local audio features."
 authors = [{ name = "Jordan Vercillo" }]
 readme = "README.md"
 # pyspark 3.5.x predates Python 3.12+ quirks on Windows workers; both hosts stay on 3.11 (/spark-env).

@@ -1,0 +1,637 @@
+# specs/music_data_platform_spec.yaml — the Phase 1 platform spec for audio_features.
+# The frozen design contract: the build READS it and never edits it; a design change comes back
+# here through /spec. Validated by `uv run .claude/skills/spec/validate_spec.py <this file>`.
+# Numbers nobody ruled are marked PROPOSED. Rulings are dated in decision_log.
+# Verification lines are tagged CI (runs from a clone, no data, no network) or local (needs the
+# loaded dump and/or the network).
+
+spec:
+  id: music-data-platform
+  title: Music data platform — the MusicBrainz warehouse, its weekly refresh, and the joins to come
+  status: IN REVIEW            # DRAFT → IN REVIEW → APPROVED (only the owner's word) → BUILT
+  owner: Jordan Vercillo
+  written: 2026-11-06
+  roadmap_phase: "Phase 1 — The spec and the dataflow diagram (notes/roadmap.md)"
+  diagram: docs/dataflow.md
+
+approach:
+  summary: >
+    A weekly-refreshed warehouse built from the public MusicBrainz full export, laid out in five
+    Parquet layers (ingest → cleansed → staging → modeled → report) under
+    data/<environment>/<layer>/<source>/<table>/, the local mirror of the
+    project.layer_source.table pattern (atz-data-hub-prd.cleansed_musicbrainz.artists) the
+    owner uses on BigQuery. An idempotent Python script lands the dump; dbt Core on a local
+    PySpark session (dbt-spark, session method) owns every transformation from cleansed to
+    report, one SQL model per table, the dbt schema naming the layer and the source; dbt tests
+    are the layer contracts and /warehouse-audit is the deterministic health check (dump
+    freshness against LATEST, layer presence and order, quarantine ratios). Later slices join
+    Jordan's Spotify top tracks and artists (PKCE, no secret) and locally extracted librosa
+    audio features to the MusicBrainz records as the source of truth. A Streamlit dashboard
+    reads the report layer through DuckDB, and one page on vercilloanalytics.com (rendered by
+    the webresume repo) presents the project. Two environments, dev and prd, map to dbt targets
+    and data roots; main is the knowledge base, the orchestrator and the dev line, and a
+    protected prd branch is promoted from it. The platform is a portfolio piece for Data
+    Platform / Data Engineer roles, so every step is visible in git, reproducible from a clone,
+    reviewed through PRs and audited by script.
+  decisions:
+    dump_subset:
+      choice: >
+        Three archives per refresh: mbdump.tar.bz2 (core, ~7 GB), mbdump-derived.tar.bz2 (tags,
+        ratings, metadata, ~503 MB) and mbdump-cover-art-archive.tar.bz2 (~163 MB), plus
+        SHA256SUMS for verification.
+      reasoning: >
+        Overrules the core-only recommendation. Owner: genre tags and release artwork are
+        first-class in the dashboard and the site section, so they belong in the warehouse from
+        the first refresh, not bolted on in Phase 6. Rejected: edit (16 GB of edit history),
+        editor, stats, cdstubs, wikidocs, documentation, event-art — nothing downstream reads
+        them.
+    ingest_scope:
+      choice: >
+        An allowlist of tables, kept in ONE config file the fetch script reads (PROPOSED home:
+        src/audio_features/musicbrainz_tables.yaml). Each entry is a mapping, never a bare name:
+        archive (core | derived | cover-art), member (the table part of the tar member path
+        mbdump/<member>; schema-qualified for cover-art, e.g. cover_art_archive.cover_art),
+        table (the ingest folder name, schema prefix stripped; unique across archives),
+        primary_key (a list; composite keys allowed), role (entity | link | lookup | tag),
+        may_be_empty (false by default) and columns (the dump's column list for that
+        SCHEMA_SEQUENCE). PROPOSED list — core: artist, artist_credit, artist_credit_name,
+        artist_type, gender, area, area_type, country_area, iso_3166_1, l_area_area, label,
+        label_type, release, release_country, release_unknown_country, release_label,
+        release_group, release_group_primary_type, release_group_secondary_type,
+        release_group_secondary_type_join, release_status, release_packaging, medium,
+        medium_format, track, recording, isrc, genre, language, script, url, link, link_type,
+        l_artist_recording, l_artist_url, l_recording_url, l_release_url; derived: tag,
+        artist_tag, recording_tag, release_tag, release_group_tag, artist_meta, recording_meta,
+        release_meta, release_group_meta; cover-art: cover_art_archive.art_type,
+        cover_art_archive.cover_art, cover_art_archive.cover_art_type,
+        cover_art_archive.image_type, cover_art_archive.release_group_cover_art. By Phase 4 add
+        artist_gid_redirect and recording_gid_redirect (core). Deferred until something reads
+        them: the *_alias and *_alias_type tables, work, work_type, l_recording_work. Never
+        allowlist area_containment, release_first_release_date, recording_first_release_date,
+        artist_release or artist_release_group: they exist in the server schema but are not
+        exported. The list is the contract; counts are not stated. A missing member fails the
+        run with its name unless the entry carries may_be_empty: true (the dump omits a table
+        with zero rows), in which case an empty Parquet folder with the documented columns is
+        written. Phase 2 corrects the list against the real archive index of the loaded dump.
+      reasoning: >
+        The core archive holds about 236 tables (~40 GB uncompressed); converting all of them
+        weekly costs hours and tens of GB for tables nothing reads. Adding a table is a one-line
+        PR. Archive placement and member naming were verified against the musicbrainz-server
+        source (Constants.pm CORE/DERIVED/CAA table lists, DatabaseDump.pm) on 2026-11-06 by the
+        data-modeling seat: genre is a core table, cover-art members are schema-qualified, a
+        zero-row table is not added to the tar. Rejected: every table verbatim (cost), and
+        keeping extracted TSVs on disk for ad-hoc use (a pruning rule nobody needs yet).
+    naming_and_layout:
+      choice: >
+        The local mirror of project.layer_source.table. Environment: dev | prd (a dbt target
+        and a data root, data/<environment>/). Layer and source: the dbt schema is
+        <layer>_<source> (cleansed_musicbrainz, staging_musicbrainz, staging_spotify); modeled
+        and report carry the data domain in the source slot (modeled_music, report_music). On
+        disk: data/<environment>/<layer>/<source>/<table>/ (data/prd/cleansed/musicbrainz/
+        artists/). Table names: ingest keeps the dump's singular names; from cleansed onward
+        every table name is PLURAL (artists, releases, dim_artists, fact_tracks), every struct
+        is SINGULAR (artist, label, release_event), and every SQL table alias is plural. A table
+        name is never reused across layers: cleansed pluralises, staging joins create new
+        names, modeled adds the type prefix. dbt model files are <schema>__<table>.sql (dbt
+        requires unique node names) with config(alias='<table>') so the relation is
+        <schema>.<table> with no prefix; ref() uses the file name. Columns: full words, never
+        acronyms; keys per key_naming.
+      reasoning: >
+        Owner, verbatim: "in big query our modeling pattern we've done in the past is
+        billing_project (atz-data-hub-dev, atz-data-hub-qa, atz-data-hub-prd), then the layer
+        and folder in the layer (staged_distribution, modeled_distribution, cleansed_musicbrainz)
+        then the table name. So the full path would be atz-data-hub-prd.cleansed_musicbrainz.
+        artists for example. Can we adopt a similar strategy here." and "all table names must be
+        plural, all structs are singular. All table alias are plural. We should never have the
+        same table name between layers." The testing seat found that dbt refuses two models
+        with the same bare name, so the file carries the schema and the alias keeps the table
+        bare. Rejected: schema-only with a flat data/<layer>/<table>/ (two sources with one
+        table name collide in Phase 4) and layer prefixes on the tables themselves (the owner's
+        no-prefix ruling for data).
+    layer_contracts:
+      choice: >
+        ingest: one folder per allowlisted table under data/<environment>/ingest/musicbrainz/,
+        the dump's singular table name, column names exactly as in the dump, EVERY column a
+        STRING (UTF-8) exactly as read from the tab-separated file; the one allowed change is
+        \N → null. Nothing is cast, trimmed, dropped or added. Plus _manifest.json in the
+        source folder. cleansed: the raw table, one model per table that downstream reads, named
+        plural; deduplicated on the entry's primary_key; every cast (ints, timestamps,
+        booleans; UUIDs stay strings) per the dump's schema; column names cleaned up: the key
+        convention (artist_id, artist_musicbrainz_id, artist_credit_id) and full-word names;
+        data-quality cleaning (trimmed text, normalised empty strings to null, enum ids swapped
+        for their names where the lookup is a pure enumeration); the MusicBrainz-internal
+        columns edits_pending, ref_count, edit, created and last_updated dropped (PROPOSED
+        list); rows that fail a cast quarantined to
+        data/<environment>/cleansed/musicbrainz/_quarantine/<table>/ (underscore-prefixed so the
+        audit skips it as a table) with every ingest column as STRING plus failed_column,
+        failure_reason, source_batch and quarantined_at; a dbt test fails the build when a
+        table's quarantine exceeds PROPOSED 1% of its rows. Grain: one output row per input row
+        minus quarantined rows, no join, no filter, no aggregation. Small reference and
+        enumeration tables stop here and have no staging model. staging: the logic layer —
+        header and detail tables joined (a release with its release events, labels and media;
+        an artist credit with its artists; a track with its recording), as many dimension
+        tables folded in as possible so modeled stays focused on joining data domains, child
+        rows folded into arrays of singular structs where a nested shape reads better than a
+        join; every join creates a NEW plural name (artist_credits_with_artists,
+        releases_with_events_and_labels, tracks_with_recordings); a table that needs no logic
+        has no staging model. modeled: joins across data domains (MusicBrainz, Spotify, audio
+        features) and the star schema (dims, facts, bridges below); cross-source key resolution
+        lives here. report: the marts the dashboard reads; every mart states its grain in one
+        sentence in its model description and carries no foreign key back to modeled. Lineage:
+        from cleansed onward every table carries source_system ('musicbrainz' | 'spotify' |
+        'librosa'), source_batch (the dump id or the snapshot id) and loaded_at (UTC); for
+        MusicBrainz they are constants from the manifest. Row-count contracts: a dbt test per
+        declared pair asserts the relationship (cleansed artists = ingest artist minus its
+        quarantine; a staging header table = its cleansed header table) — this replaces the
+        audit's name-based parity check, which cannot work when names never repeat.
+      reasoning: >
+        Owner, verbatim: "cleansed should always be the raw table, deduplicated, and names
+        cleaned up as well as any data quality cleaning. In staged we define logic and join
+        common tables like header and detail tables together. This will naturally create a new
+        name. All tables do not need to be in all layers. If there's no need for a staged layer
+        for example it's a small reference/dimension table then we will not include it. We
+        should strive to join as much as possible dimension tables in the staged layer to keep
+        the model layer focused on joining different data domains and or any modeling that
+        needs to be done." Supersedes the earlier split (renaming in staging): renaming moves to
+        cleansed. Cross-source key resolution (Spotify ISRC / musicbrainz id → recording) stays
+        a modeling decision in modeled. The ingest-is-all-strings rule keeps ingest and cleansed
+        from overlapping; the one-row-per-row rule for cleansed is what the row-count tests
+        assert. Lineage columns from cleansed onward let Phase 4's per-snapshot Spotify rows
+        join without changing the contracts.
+    transformation_engine:
+      choice: >
+        dbt Core with dbt-spark's `session` connection method (dbt-spark 1.11.x with the
+        `session` extra, dbt-core 1.12.x, Apache-2.0, free), running models inside a local
+        PySpark 3.5.6 session on CPython 3.11. One SQL model per table under models/<layer>/
+        (cleansed, staging, modeled, report), the dbt schema per naming_and_layout, materialised
+        as Parquet tables under data/<environment>/<layer>/<source>/<table>/ through the
+        adapter's location_root config driven by a data_root var and the target; dbt schema
+        tests (unique, not_null, relationships, accepted_values, row-count assertions) are the
+        layer contracts. The ingest (tar → Parquet) stays a Python script. Notebooks are
+        exploration only.
+      reasoning: >
+        Owner: "we will structure our sql in dbt or dataform format. We can even use dbt with
+        our stack if it's free to keep all the transformations." Dataform is BigQuery-only, so
+        it is out. dbt gives lineage (ref()), tests as contracts, DRY through macros, and a
+        single `uv run dbt build`. Rejected: Spark SQL in notebooks laid out dbt-style (no
+        lineage graph, no built-in tests, DRY enforced only by review) and dbt-duckdb (drops the
+        Spark story CLAUDE.md ground rule 1 commits to). Cost accepted: a Derby metastore_db
+        folder (gitignored), dbt-spark on Windows being less travelled than on WSL.
+    environments_and_branches:
+      choice: >
+        Two environments, dev and prd, each a dbt target in profiles.yml and a data root
+        (data/dev/, data/prd/). main is the knowledge base (notes, specs, harness), the
+        orchestrator and the dev line: every reviewed PR lands on main and builds against
+        target dev. A protected prd branch receives only merges from main, through a PR titled
+        "promote <dump>" when a refresh is promoted, and builds against target prd; the
+        dashboard reads data/prd/report/. /ship and CI are unchanged (they target main).
+      reasoning: >
+        Owner: "We should also have a DEV and PRD branch once we develop the code while this
+        repo would remain the knowledge base and primary orchestrator." One repo, one harness,
+        a PR trail for every promotion. Rejected: a separate code repository (duplicated
+        harness, CI and /ship; every session across two checkouts) and dbt targets with no
+        branches (no PR trail for a promotion). Cost accepted: two data roots on one laptop
+        when both environments are built.
+    sql_conventions:
+      choice: >
+        DRY (macros and ref(), never a copied CTE). Aliases and column names are full words,
+        never acronyms; table aliases are plural, struct names singular. The folder is the
+        layer and the schema is <layer>_<source>; tables carry no layer prefix (the type prefix
+        dim_/fact_/bridge_ inside modeled is the one exception). Structs where a nested shape
+        reads better than a join. The simplest, most optimised, human-readable option wins.
+        These rules bind every SQL file, join and model across all layers.
+      reasoning: >
+        Owner, verbatim: "We will confirm to the dry principal, aliases must be the full name and
+        not acronams. Our cleansed layer will be a folder cleansed, our staging layer will be a
+        folder staging, we do not need to prefix or suffix these. This principal will come into
+        place for any SQL, joins, or modeling. We will also use structs where we can and ensure
+        we keep the code readable, always use the simplest and most optimized human readable
+        option."
+    key_naming:
+      choice: >
+        From cleansed onward: the dump's integer `id` becomes <entity>_id and the UUID `gid`
+        becomes <entity>_musicbrainz_id (artist_id, artist_musicbrainz_id); foreign keys follow
+        the same pattern (release.artist_credit → artist_credit_id). Joins in modeled use the
+        integer ids; dims expose both; the Spotify match in Phase 4 lands on
+        <entity>_musicbrainz_id. Ingest keeps the dump's column names. Every MusicBrainz dim's
+        natural key is <entity>_id with <entity>_musicbrainz_id beside it; dim_dates' natural
+        key is date_id (yyyymmdd); bridges are keyed by their two natural keys.
+      reasoning: >
+        `id` is the one abbreviation every warehouse accepts; `mbid` is an acronym and the
+        aliases rule bans them. Both ids persist across dumps while the entity survives (serial
+        keys replicate as-is; they are not renumbered); merges and deletions remove rows and
+        <entity>_gid_redirect maps a retired musicbrainz_id to its successor, which is why
+        anything that must survive a refresh keys on the UUID and resolves through the redirect
+        table. Rejected: <entity>_mbid (needs a written exception) and making the UUID the
+        public <entity>_id with the integer as <entity>_key (the column named id would change
+        meaning across layers).
+    weekly_refresh:
+      choice: >
+        `uv run scripts/fetch_musicbrainz.py --environment <dev|prd>` is idempotent: read LATEST
+        (https://data.metabrainz.org/pub/musicbrainz/data/fullexport/LATEST, one line such as
+        20261104-002222); exit 0 early, within seconds, printing the dump it already holds, when
+        the manifest names that dump; otherwise download the three archives and SHA256SUMS with
+        HTTP Range resume into data/<environment>/musicbrainz_dumps/<dump>/, verify the
+        checksums, extract only the allowlisted members, convert to Parquet under
+        data/<environment>/ingest/musicbrainz/<table>/, write the manifest last and atomically,
+        delete the archives (PROPOSED: keep none). The script takes --base-url (default the
+        fullexport URL) so tests point it at a file:// directory, and its download function
+        takes an opener so a fake opener can test resume. No scheduler lives in the repo:
+        /warehouse-audit raises DUMP_STALE when the manifest's dump is not LATEST, and the
+        session that sees it runs the script.
+      reasoning: >
+        MusicBrainz publishes a full export roughly twice a week; the laptop that would run a
+        scheduled task may be asleep, and a 7 GB download failing silently is worse than a flag.
+        The injection seams are what make the "no network" tests possible. Rejected: a Windows
+        Task Scheduler entry (lives outside git) and a GitHub Actions cron (no cloud storage for
+        the data yet).
+    manifest:
+      choice: >
+        data/<environment>/ingest/musicbrainz/_manifest.json holds dump ("<YYYYMMDD-HHMMSS>",
+        the audit's contract), schema_sequence, replication_sequence, started_at and loaded_at
+        (UTC), duration_seconds, archives (name, sha256, bytes) and tables (table, archive,
+        member, rows). All fields are mandatory. The fetch also appends a copy to
+        data/<environment>/ingest/musicbrainz/_manifest_history/<dump>.json (an underscore
+        folder the audit skips) so warehouse_refreshes keeps one row per loaded dump across
+        refreshes and across a rebuild from an empty layer set (PROPOSED).
+      reasoning: >
+        The audit already reads "dump"; the rest makes a refresh auditable without re-opening
+        the archives; duration_seconds is the home of the wall-clock metric and the history
+        folder is the home of the refresh mart (the manifest alone is one file overwritten per
+        refresh, so the mart could never hold more than one row). One home per fact: the audit
+        never grows a second manifest format.
+    star_schema:
+      choice: >
+        Phase 3, MusicBrainz only, all names plural. Dims: dim_artists, dim_recordings,
+        dim_releases, dim_release_groups, dim_labels, dim_areas, dim_genres, dim_dates, and
+        PROPOSED dim_artist_credits. Bridges (PROPOSED): bridge_artist_credits_artists
+        (artist_credit_id, artist_id, position, weight = 1 / artist_count), bridge_artists_genres
+        and bridge_release_groups_genres (entity id, genre_id, vote_count, genre_rank by
+        vote_count descending then name; genre_rank = 1 is the primary genre). Facts: fact_tracks
+        at the grain of one row per track on a medium of a release (track_id), keyed to
+        recording_id, release_id, medium_id, the track's own artist_credit_id (which can differ
+        from the recording's and the release's) and first_release_date_id; measure
+        length_milliseconds = track length (PROPOSED: coalesced with the recording length, with
+        a length_source flag); position and number are degenerate attributes, not measures.
+        fact_releases at one row per release, keyed to release_group_id, artist_credit_id,
+        first_release_date_id, with measures medium_count and track_count counted from media and
+        tracks in modeled (never read from medium.track_count), and attributes
+        first_release_date and first_release_date_precision. Dates: a release's dates live on
+        its release events (release_country ∪ release_unknown_country, one partial date each);
+        first_release_date = the minimum over them; precision is 'day' | 'month' | 'year' |
+        'unknown'; PROPOSED: the events ride on dim_releases as release_events
+        array<struct release_event{country_area_id, date, precision}> now, with
+        fact_release_events (one row per release × country) a Phase 3+ option. dim_dates
+        (PROPOSED rule): natural key date_id INT yyyymmdd with calendar_date, year, quarter,
+        month, week, day_of_week, one row per day from the earliest release year to the current
+        year; a partial date keys to the first day of its period (1997 → 19970101) with the
+        precision column beside it; unknown is NULL and relationships tests apply to non-null
+        keys; the same dim serves the first-release-date role now and the snapshot-date role in
+        Phase 4. dim_recordings carries length_milliseconds, isrc_count and isrcs
+        array<string>. dim_releases carries labels as array<struct label{label_id,
+        catalog_number}> (label is nullable in the dump) and has_cover_art from
+        release_meta.cover_art_presence. dim_release_groups carries primary_type,
+        secondary_types array<string>, release_count and the first release date from
+        release_group_meta. dim_areas derives country_area_id, country_name and country_code
+        (iso_3166_1) by walking l_area_area ⋈ link ⋈ link_type ('part of') to the nearest
+        ancestor in country_area, depth capped at PROPOSED 6 (area_containment is not
+        exported). dim_genres comes from core genre; release-level genre is taken from the
+        release group, where MusicBrainz genre tags live. Phase 4 adds fact_top_tracks at one
+        row per (snapshot_date, time_range, rank) Spotify top-track entry resolved to a
+        recording; its match rate joins the audit. Naming: dim_<entities>, fact_<events>,
+        bridge_<as>_<bs> inside models/modeled/ (a type prefix, not a layer prefix).
+      reasoning: >
+        A reviewable fact exists at the 20% checkpoint without inventing events. The
+        data-modeling seat's review (2026-11-06) added the artist-credit dim and bridge (an
+        artist credit holds many artists, so a single artist key on a fact would explode or
+        truncate the grain), moved isrc_count to dim_recordings (an ISRC hangs off a recording;
+        summing it over tracks multiplies it), defined the release date from release events
+        (release_first_release_date is not exported), the partial-date rule, genre as a bridge
+        (an entity has many genre tags with vote counts) and the area roll-up. The owner
+        accepted all of them as PROPOSED defaults, to be re-confirmed at the 20% checkpoint
+        before models/modeled is written. Rejected: one wide fact_recordings (a recording on
+        five releases collapses into arrays) and no facts until Phase 4 (the Phase 3 marts would
+        sit on dims alone).
+    dashboard:
+      choice: >
+        Streamlit, one app under dashboard/, reading data/prd/report/music/<table>/ through
+        DuckDB read_parquet; runnable locally and on Streamlit Community Cloud (free). The site
+        page links to it and embeds screenshots. Named Phase 6+ option, not scheduled: export
+        the report layer to BigQuery (free tier) and present it in Looker Studio if a BI-tool
+        showcase is wanted after go-live.
+      reasoning: >
+        Owner asked whether Tableau, Looker or Power BI would be better. Tableau Public is free
+        but public-only and reads no Parquet; Looker Studio needs BigQuery, Sheets or a CSV
+        upload; Power BI shares only through a Pro licence or a public embed and the .pbix is
+        not reproducible from code. Streamlit keeps the dashboard in git, testable in CI, with
+        Spark as the only writer and the app's SQL in the same dbt style. Ruled: Streamlit now,
+        BI later.
+    site_placement:
+      choice: >
+        One page, vercilloanalytics.com/projects/audio-features, from projects/audio-features.md
+        in C:\Users\jverc\webresume (rebuilt and committed there; its site/ is never hand-edited).
+      reasoning: >
+        Same build as the rest of the site, no DNS. Rejected: a subdomain (a record outside git;
+        custom domains on Community Cloud are tier-dependent) and a home-page block (no room for
+        the diagram and the write-up).
+    later_sources:
+      choice: >
+        Spotify (Phase 4): top tracks and artists over PKCE with the predecessor's client as the
+        model (C:\Users\jverc\audio-agentic-pipeline, src/ingestion/auth.py and fetchers.py);
+        SPOTIPY_CLIENT_ID and SPOTIPY_REDIRECT_URI from .env, no client secret anywhere; lands
+        in ingest as data/<environment>/ingest/spotify/<table>/ with its own manifest, flows
+        through cleansed_spotify and staging_spotify with source_system 'spotify' and
+        source_batch = the snapshot id, resolves to MusicBrainz in modeled (ISRC first, then
+        recording and artist musicbrainz ids through l_recording_url / l_artist_url Spotify
+        links and the gid_redirect tables). Audio features (Phase 5): librosa extraction for
+        Jordan's tracks only, idempotent, the predecessor's src/dsp/feature_extractor.py as the
+        starting point, landing under ingest/librosa/ keyed by the Spotify track id and joined
+        in modeled. Both are later slices of this spec and are re-specced in detail before they
+        are built.
+      reasoning: >
+        The platform spec fixes where they enter and what they join on, so the layer contracts
+        do not change shape when they arrive; their internals are not designed here.
+    checkpoints:
+      choice: >
+        20% — a reviewer session on the first draft of the layers. Entry state, all observable:
+        (a) `uv run dbt build --select cleansed staging --target dev` → exit 0, WARN=0 ERROR=0,
+        on a dump named in the dev manifest; (b) `ls models/modeled/*.sql` → no files; (c) the
+        online audit → NO_DATA, NO_MANIFEST, LAYER_MISSING all false and every quarantine ratio
+        under the ceiling; (d) the slice-3 PR is open on main. It also re-confirms the PROPOSED
+        modeling defaults (dim_artist_credits and the bridges, the partial-date rule, the
+        primary-genre rule, release events as a struct array, the Various Artists exclusion,
+        the length bands). 80% — a reviewer session before go-live. Entry state: (a) `uv run
+        dbt build --target prd` → exit 0 for all four layers after data/prd/cleansed..report
+        were deleted; (b) `uv run streamlit run dashboard/app.py --server.headless true` serves
+        HTTP 200 on localhost:8501; (c) `curl -s -o /dev/null -w '%{http_code}'
+        https://vercilloanalytics.com/projects/audio-features` → 404 (not yet published); (d)
+        the Phase 6 PR is open. Each checkpoint is a SITTING lane on the whole phase with the
+        code-reviewer seat, and its exit is a dated journal entry.
+      reasoning: >
+        Named entry states make the checkpoints observable instead of a feeling of "about 20%
+        done".
+
+tasks:
+  task_1:
+    name: Commit the spec, the dataflow diagram and the harness text they change (Phase 1, this PR)
+    details: |
+      specs/music_data_platform_spec.yaml (this file) validates. docs/dataflow.md holds the
+      Mermaid diagram of sources → five layers → dashboard and site, with the Spotify and audio
+      feature joins drawn as later slices. CLAUDE.md ground rules 1 and 2 and its Map change
+      from "notebooks, one per layer hop" and data/<layer>/<table>/ to dbt models under
+      models/<layer>/ and data/<environment>/<layer>/<source>/<table>/; README.md and
+      pyproject.toml say the same in their one-line descriptions.
+  task_2:
+    name: Stand up the engine — Spark session, dbt project, package skeleton (Phase 2, slice 1)
+    details: |
+      /spark-env for local PySpark 3.5.6 on Windows and WSL. Add dbt-core and dbt-spark[session]
+      to pyproject (uv); every dependency a script needs is in pyproject too, because the tests
+      run scripts with `sys.executable -I`, which ignores PEP 723 headers. Create
+      dbt_project.yml (name audio_features, model-paths models/), profiles.yml committed in the
+      repo with method session and targets dev and prd (no secrets exist), models/ with the four
+      layer folders, +schema <layer>_<source> per folder, +file_format parquet and a
+      +location_root built from the data_root var (default data/<target>/) so a test can point
+      a build at tmp_path. Create src/audio_features/ with spark_session.py (the one builder:
+      local[*], warehouse dir under data/<environment>/, Derby metastore under metastore_db/
+      which is gitignored; PYSPARK_PYTHON set here, never globally) and layers.py (the layer
+      and environment paths, the LAYERS tuple shared with the audit). Prove it: `uv run dbt
+      debug --target dev` → exit 0, All checks passed!; two models with the same bare name in
+      two folders → `uv run dbt parse` fails with the duplicate-name error; the aliased pair
+      (cleansed_musicbrainz__artists.sql, staging_musicbrainz__artists_with_types.sql, say) →
+      `dbt build` writes both folders under data/dev/ with bare table names.
+  task_3:
+    name: The weekly fetch — scripts/fetch_musicbrainz.py and the table allowlist (Phase 2, slice 2)
+    details: |
+      PEP 723 script run through uv, per weekly_refresh and manifest. Stream each allowlisted
+      member out of the tar (the dump's tab-separated format: \N is null, backslash escapes as
+      in PostgreSQL COPY) into Parquet with the dump's column names from the allowlist entry,
+      every column STRING. Tests on synthetic tarballs, no network, in
+      tests/test_fetch_musicbrainz.py, each seen to fail first: (a) end to end with the audit:
+      run the fetch with --base-url file://<tmp> against a synthetic LATEST, SHA256SUMS and
+      three tiny archives, then audit_warehouse.py --root <tmp> --offline (subprocess, as
+      tests/test_audit_contract.py does) → NO_DATA false, NO_MANIFEST false, inventory.dump
+      equals the synthetic LATEST, the ingest table names equal the allowlist's (broken by
+      writing a manifest with the wrong dump); (b) the ingest contract: every column of every
+      written Parquet is a pyarrow string and the column list equals the allowlist entry's
+      (broken by casting one column); (c) resume: a partial archive on disk plus a fake Range
+      opener → sha256 verifies after resume (broken by corrupting the partial); (d) atomic
+      manifest: a member whose conversion raises leaves no _manifest.json and the next run does
+      not early-exit (broken by writing the manifest first); (e) the early exit: a second run
+      exits 0 within seconds, prints the dump, and loaded_at is unchanged; (f) a checksum
+      mismatch, a missing member, a may_be_empty member, the \N and escape handling; (g) the
+      allowlist schema: archive in {core, derived, cover-art}, member, table unique across
+      archives, primary_key a non-empty list, role in the four values, may_be_empty bool,
+      columns non-empty (broken by duplicating a table name). Also this slice's HARNESS part:
+      the audit learns the environment root (--environment, default prd), the source level
+      under each layer and the manifest's new path; LAYER_PARITY and parity_checked retire
+      (names never repeat across layers) in favour of the dbt row-count tests, and
+      inventory.quarantine[<source>/<table>] = {rows, ratio} is read from each _quarantine
+      folder; tests/test_audit_contract.py and SKILL.md "Flag meanings" change with it.
+  task_4:
+    name: models/cleansed and models/staging (Phase 2, slice 3) → the 20% checkpoint
+    details: |
+      cleansed_musicbrainz: one model per table that downstream reads, per layer_contracts
+      (plural name, dedupe on primary_key, casts, renamed and cleaned columns, enum names,
+      internal columns dropped, quarantine, lineage columns). staging_musicbrainz: the joined
+      logic tables with new plural names (artist_credits_with_artists,
+      releases_with_events_and_labels, release_groups_with_types_and_genres,
+      tracks_with_recordings, areas_with_countries, PROPOSED), structs singular. dbt tests:
+      unique + not_null on every key, relationships on every foreign key, accepted_values on
+      enums, the row-count tests per declared pair, the quarantine ceiling. A synthetic ingest
+      fixture in tests/test_dbt_synthetic_build.py: every allowlisted table, 3–5 rows each,
+      including one row that fails a cast, one duplicate primary key and one may_be_empty table
+      with zero rows, written by pytest to tmp_path with pyarrow; `dbt build --vars
+      '{data_root: <tmp_path>}' --target dev`; asserts the bad row is in the _quarantine folder
+      with failed_column, failure_reason, source_batch, quarantined_at, the duplicate collapses
+      to one cleansed row, every declared pair's row-count test passes, and the audit --root
+      <tmp_path> --offline → LAYER_MISSING false and every quarantine ratio reported; broken on
+      purpose by raising the quarantine seed above the ceiling (the build must fail) and by
+      dropping a staging row (the row-count test must fire). CI gains a JDK step
+      (actions/setup-java) beside setup-uv for this test. Then the 20% reviewer session.
+  task_5:
+    name: models/modeled — the star schema (Phase 3, slice 1)
+    details: |
+      The dims, bridges and facts named in star_schema at the grains stated there, including
+      dim_dates and the area roll-up. Every dim exposes <entity>_id and
+      <entity>_musicbrainz_id. dbt tests: unique + not_null on every natural key, relationships
+      from every fact and bridge key to its dim (non-null keys), a row-count assertion that
+      fact_tracks equals tracks_with_recordings and fact_releases equals
+      releases_with_events_and_labels.
+  task_6:
+    name: models/report — the marts (Phase 3, slice 2)
+    details: |
+      PROPOSED marts (plural), each with its grain and what it depends on:
+      artist_release_counts (one row per artist; bridge_artist_credits_artists; excludes the
+      Various Artists artist, musicbrainz id 89ad4ac3-39f7-470e-963a-56509c546377, PROPOSED),
+      releases_by_year_and_genre (one row per (first_release_year, genre); first_release_date +
+      precision and bridge_release_groups_genres with genre_rank = 1), recording_length_bands
+      (one row per band; dim_recordings.length_milliseconds; PROPOSED bands under 2:00, 2–3,
+      3–4, 4–6, 6–10, over 10 minutes), labels_by_country (one row per country; dim_areas'
+      country roll-up), warehouse_refreshes (one row per loaded dump; read from
+      _manifest_history/). Each mart is denormalised, aggregated and small enough for DuckDB to
+      read whole in the dashboard. The marts are re-specced with the dashboard wireframe at the
+      start of Phase 6.
+  task_7:
+    name: Spotify integration (Phase 4) — re-spec before build
+    details: |
+      A slice spec of its own (specs/spotify_integration_spec.yaml) that reads later_sources
+      here and rules: which endpoints and time ranges, the snapshot grain, the resolution order
+      (ISRC → recording, then Spotify URL relationships and the gid_redirect tables), the
+      token cache location (gitignored .cache/), and its HARNESS part: the audit gains a
+      MATCH_RATE_LOW flag and inventory.match_rate, with its test in tests/test_audit_contract.py
+      and its line in SKILL.md "Flag meanings".
+  task_8:
+    name: Audio features (Phase 5) — re-spec before build
+    details: |
+      A slice spec of its own (specs/audio_features_spec.yaml): the librosa feature set
+      (start from the predecessor's extractor and keep it simple), idempotency on the Spotify
+      track id, where the audio comes from, and the ingest table it lands in.
+  task_9:
+    name: Dashboard, site page, promotion to prd, go-live (Phase 6) → the 80% checkpoint
+    details: |
+      dashboard/app.py (Streamlit) over data/prd/report/music/ via DuckDB; a dashboard/README
+      with the run command; the first "promote <dump>" PR from main to prd; the webresume page
+      projects/audio-features.md with the diagram, screenshots and the app link; the 80%
+      reviewer session before the page is published.
+
+integration_steps:
+  - "Extend: CLAUDE.md ground rule 1 (notebooks → dbt models; notebooks exploration-only), ground rule 2 (the data path gains environment and source levels), the Map rows for notebooks/, src/, scripts/, data/ and the new models/ and dashboard/ folders; README.md and pyproject.toml descriptions."
+  - "Extend: pyproject.toml dependencies in Phase 2 (dbt-core, dbt-spark[session], pyspark pinned 3.5.6, pyyaml, pyarrow) and Phase 6 (streamlit, duckdb); .gitignore already covers data/, metastore_db/, derby.log, spark-warehouse/, *.duckdb, .cache/."
+  - "Changed in Phase 2, slice 2 (a named HARNESS part of task_3, never absorbed): .claude/skills/warehouse-audit/audit_warehouse.py and its SKILL.md and test — environment root, source level, manifest path, quarantine ratios, LAYER_PARITY retired. Unchanged until then: LAYERS order, the dump key, the LATEST URL, the five flags, underscore folders skipped. Phase 4 adds MATCH_RATE_LOW (task_7)."
+  - "Extend: .github/workflows/ci.yml keeps guards, ruff, pytest and the offline audit; Phase 2 adds a JDK step for the synthetic dbt build test (never a real dump in CI)."
+  - "Extend: branches — a protected prd branch is created at the first promotion (Phase 6); main stays the PR target for every slice."
+  - "Read-only: C:\\Users\\jverc\\audio-agentic-pipeline (reuse by reading: Spotify PKCE auth, fetchers, the librosa extractor); C:\\Users\\jverc\\webresume\\site\\ (generated, never hand-edited)."
+  - "Read-only: data/ (rebuildable, gitignored, never hand-edited)."
+
+evaluation_plan:
+  metrics:
+    - "/warehouse-audit (online, --environment prd): DUMP_STALE false after a refresh, LAYER_MISSING false, NO_MANIFEST false, NO_DATA false"
+    - "dbt build: exit 0 with ERROR=0 and WARN=0 on the loaded dump; every quarantine ratio in the audit's inventory.quarantine under the PROPOSED 1% ceiling"
+    - "Refresh wall-clock: _manifest.json duration_seconds < 7200 (PROPOSED 2-hour target) on the Windows laptop; the first measurement is also recorded in notes/journal.md"
+    - "Phase 4: inventory.match_rate >= PROPOSED 0.9 on ISRC + musicbrainz ids, MATCH_RATE_LOW false"
+  dataset: >
+    The MusicBrainz full export named by LATEST at build time (20261104-002222 on 2026-11-06,
+    schema sequence 31). Tests use synthetic tarballs and synthetic Parquet only; no network.
+  baseline: "none — new platform (the predecessor audio-agentic-pipeline is a different design: Spotify-keyed medallion, no MusicBrainz)"
+
+reference_materials:
+  reused_modules:
+    - ".claude/skills/warehouse-audit/audit_warehouse.py — the audit contract this spec designs to, and changes in task_3"
+    - "C:\\Users\\jverc\\audio-agentic-pipeline\\src\\ingestion\\auth.py and fetchers.py — Spotify PKCE client and top-tracks fetchers (read, adapt, never import)"
+    - "C:\\Users\\jverc\\audio-agentic-pipeline\\src\\dsp\\feature_extractor.py — the librosa extractor to simplify from"
+    - "C:\\Users\\jverc\\audio-agentic-pipeline\\CLAUDE_INSTRUCTIONS.md ADR-001/ADR-002 — the medallion and denormalised-fact reasoning this spec consciously departs from"
+  external:
+    - "https://data.metabrainz.org/pub/musicbrainz/data/fullexport/ — dated dump folders + LATEST; the 20261104-002222 folder lists mbdump.tar.bz2 (7G), mbdump-derived.tar.bz2 (503M), mbdump-cover-art-archive.tar.bz2 (163M), SHA256SUMS"
+    - "https://musicbrainz.org/doc/MusicBrainz_Database/Schema — the table and column reference for the allowlist"
+    - "https://github.com/metabrainz/musicbrainz-server — lib/MusicBrainz/Server/Constants.pm (CORE_TABLE_LIST, DERIVED_TABLE_LIST, CAA_TABLE_LIST), admin/sql/CreateTables.sql, admin/sql/caa/CreateTables.sql, lib/MusicBrainz/Script/DatabaseDump.pm (tar member naming, zero-row omission)"
+    - "https://docs.getdbt.com/reference/warehouse-setups/spark-setup — dbt-spark, session method"
+  notes:
+    - "mbdump-documentation.tar.bz2 (26 KB) carries SCHEMA_SEQUENCE, REPLICATION_SEQUENCE and TIMESTAMP for the dump; the fetch script may read these into the manifest without downloading the core archive first."
+
+success_criteria:
+  minimum: >
+    Phase 1: validate_spec exits 0; `git ls-files docs/dataflow.md` prints the path; every
+    open_questions entry has a non-empty owner and a status that names a decision or a date
+    (`grep -cE "status:.*(to be decided|unknown)"` prints 0); the PR is reviewed and merged. Phase 2: the fetch lands the allowlist as Parquet with a manifest (verification
+    lines), `uv run dbt build --select cleansed staging --target dev` exits 0, and the online
+    audit reports only a possibly stale dump.
+  good: >
+    The weekly refresh is one command, no prompt, exit 0; the star schema and marts rebuild
+    from deleted data/<environment>/cleansed..report folders in one `dbt build` that exits 0;
+    the Spotify and audio-feature joins resolve at or above the match-rate floor (audit field);
+    the Streamlit app serves HTTP 200 headless with every mart rendered; the site page returns
+    HTTP 200; CI is green on a fresh checkout and `git grep -iE 'client_secret|SPOTIPY_CLIENT_SECRET'`
+    prints nothing.
+
+verification:
+  - "CI: uv run .claude/skills/spec/validate_spec.py specs/music_data_platform_spec.yaml → exit 0, valid true, missing_sections [], warnings []"
+  - "CI: git ls-files docs/dataflow.md → prints the path; for n in MB SP AU ING CLN STG MOD REP DASH SITE; do grep -qE \"^\\s*$n\\[\" docs/dataflow.md || echo MISSING $n; done → no output (three sources, five layers, two outputs)"
+  - "CI: uv run scripts/harness_guards.py → exit 0, top-level ok true"
+  - "CI: uv run ruff check . → All checks passed!"
+  - "CI: uv run pytest -q → `N passed` with no `skipped` in the summary (3 today in tests/test_audit_contract.py; Phase 2 adds tests/test_fetch_musicbrainz.py and tests/test_dbt_synthetic_build.py, both synthetic, no network)"
+  - "CI: uv run .claude/skills/warehouse-audit/audit_warehouse.py --offline → exit 0, flags.NO_DATA true (CI has no data; --offline never judges DUMP_STALE)"
+  - "CI, Phase 2 onward: uv run pytest tests/test_dbt_synthetic_build.py -q → passed (writes a tiny ingest layer to tmp_path, runs dbt build with data_root pointed there, then the audit --root tmp_path --offline → LAYER_MISSING false and inventory.quarantine populated)"
+  - "local, Phase 2 onward: uv run dbt debug --target dev → exit 0, All checks passed!"
+  - "local, Phase 2 onward: run uv run scripts/fetch_musicbrainz.py --environment dev twice; the second run exits 0 within seconds, prints the early-exit line naming the dump, and the manifest's loaded_at is unchanged"
+  - "local, Phase 2 onward: uv run dbt build --target dev → exit 0 and final line `Done. PASS=<n> WARN=0 ERROR=0 SKIP=0 TOTAL=<n>`"
+  - "local, Phase 2 onward: uv run .claude/skills/warehouse-audit/audit_warehouse.py --environment dev (online) → inventory.dump equals inventory.latest, flags.DUMP_STALE false, NO_DATA, NO_MANIFEST, LAYER_MISSING false, every inventory.quarantine ratio < 0.01"
+
+known_pitfalls:
+  - "The dump's tab-separated files use PostgreSQL COPY escaping: \\N is null, and backslash sequences (\\t, \\n, \\\\) must be unescaped; a naive split on tab corrupts names with tabs or newlines."
+  - "Cover-art tar members are schema-qualified (mbdump/cover_art_archive.cover_art); a bare table name never matches, and the ingest folder strips the prefix. A table with zero rows is omitted from the tar entirely, so absent can mean empty, not misnamed."
+  - "dbt requires unique model names across the project: models/cleansed/artists.sql and models/staging/artists.sql cannot coexist. The file is <schema>__<table>.sql and config(alias) keeps the table bare; with the no-repeated-names rule the collision never arises on disk, but the file convention still holds."
+  - "Integer ids and UUIDs both persist across dumps while the entity survives; merges and deletions remove rows, and <entity>_gid_redirect maps a retired musicbrainz_id to its successor. Anything that must survive a refresh (the Spotify match, the audio features) keys on <entity>_musicbrainz_id and resolves through the redirect table."
+  - "dbt-spark session method opens a Derby metastore in the working directory (metastore_db/, derby.log, both gitignored); two dbt runs at once lock it, so one build at a time, one environment at a time."
+  - "Until task_3's HARNESS part lands, the audit walks data/<layer>/<table>/ and compares same-named tables between adjacent layers; the new layout (environment and source levels, names that never repeat) makes that check vacuous, so the audit change ships in the same slice as the fetch, never later."
+  - "A release has many dates (one per release event) and release_first_release_date is not exported; derive first_release_date as the minimum over release_country ∪ release_unknown_country, with its precision."
+  - "An artist credit holds many artists (artist_count); a single artist key on a fact either explodes the grain or silently takes the first. Use dim_artist_credits and the bridge."
+  - "A 7 GB download over a laptop connection fails mid-way; the fetch must resume (HTTP Range) and verify SHA256 before extracting, never trust a partial file."
+  - "The tests run scripts through `sys.executable -I`, which ignores PEP 723 headers: every dependency a script imports must also be in pyproject.toml."
+  - "Windows + PySpark: worker Python must be the uv-managed 3.11; set PYSPARK_PYTHON through the session builder, never through a global env var (journal in /spark-env)."
+
+open_questions:
+  - question: Exact allowlist per archive, with each entry's primary_key, role, may_be_empty and columns
+    status: PROPOSED (listed in ingest_scope); corrected in Phase 2 against the real archive index of the loaded dump
+    owner: python-expert, task_3
+  - question: The PROPOSED modeling defaults (dim_artist_credits + bridge, partial-date rule, primary-genre rule, release events as a struct array, Various Artists exclusion, length bands, cleansed dropped-column list, quarantine 1% ceiling, lineage columns) and the PROPOSED staging table names
+    status: accepted as PROPOSED defaults on 2026-11-06; re-confirmed with the owner at the 20% checkpoint before models/modeled is written
+    owner: data-modeling-expert, the 20% checkpoint
+  - question: Refresh wall-clock target (2 hours, judged on duration_seconds) and the match-rate floor (0.9)
+    status: PROPOSED; measured in Phase 2 and Phase 4
+    owner: testing-expert
+  - question: Report marts and the dashboard wireframe
+    status: PROPOSED list in task_6; re-specced at the start of Phase 6
+    owner: lead, Phase 6
+  - question: Whether old data/<environment>/musicbrainz_dumps/<dump>/ archives are deleted after conversion
+    status: PROPOSED (delete; keep none)
+    owner: python-expert, task_3
+  - question: When the prd branch is created and whether it is protected on GitHub
+    status: PROPOSED (at the first promotion in Phase 6; protected, merges from main only)
+    owner: owner, task_9
+
+decision_log:
+  - date: 2026-11-06
+    ruling: dump_subset — core + derived + cover-art
+    why: "owner: genre tags and release artwork are first-class in the dashboard and site section (overrules core-only REC)"
+  - date: 2026-11-06
+    ruling: layer_contracts (first ruling) — staging is dbt-style per source; cross-source resolution lives in modeled
+    why: "owner: SQL follows dbt/Dataform structure (overrules staging-as-meeting-point REC); the renaming part was moved to cleansed by the later ruling below"
+  - date: 2026-11-06
+    ruling: sql_conventions — DRY, full-word aliases, folder = layer with no prefixes, structs where they fit, simplest readable option
+    why: "owner, verbatim in sql_conventions.reasoning"
+  - date: 2026-11-06
+    ruling: transformation_engine — dbt Core + dbt-spark session; notebooks exploration-only
+    why: "free, lineage + tests + DRY; Dataform is BigQuery-only (REC accepted)"
+  - date: 2026-11-06
+    ruling: ingest_scope — allowlist in one config file
+    why: "cost of converting ~236 unused tables weekly (REC accepted)"
+  - date: 2026-11-06
+    ruling: weekly_refresh — idempotent script, the audit enforces cadence, no scheduler
+    why: "laptop may be asleep; a flag beats a silent failure (REC accepted)"
+  - date: 2026-11-06
+    ruling: dashboard — Streamlit + DuckDB now; Looker Studio over BigQuery a named later option
+    why: "owner asked about Tableau/Looker/Power BI; ruled Streamlit now, BI later (REC accepted)"
+  - date: 2026-11-06
+    ruling: site_placement — vercilloanalytics.com/projects/audio-features via webresume
+    why: "same build, no DNS (REC accepted)"
+  - date: 2026-11-06
+    ruling: star_schema — fact_tracks + fact_releases in Phase 3, fact_top_tracks in Phase 4
+    why: "a reviewable fact at the 20% checkpoint (REC accepted)"
+  - date: 2026-11-06
+    ruling: key_naming — <entity>_id and <entity>_musicbrainz_id
+    why: "aliases rule bans acronyms; id is the accepted abbreviation (REC accepted); applies from cleansed onward after the later layer ruling"
+  - date: 2026-11-06
+    ruling: data-modeling review — all eight PROPOSED additions accepted as defaults (artist-credit dim + bridge, partial-date rule, genre bridges + primary genre, release events struct, allowlist fixes, dropped-column list + quarantine ceiling, lineage columns, Various Artists exclusion + length bands); P1–P4 and P8 re-confirmed at the 20% checkpoint
+    why: "owner: accept all eight as PROPOSED defaults (REC accepted); they sit inside the rulings above and leave no silent gap"
+  - date: 2026-11-06
+    ruling: testing review — dbt files <schema>__<table>.sql with alias; quarantine ratio lives in the audit (HARNESS part of task_3); started_at + duration_seconds in the manifest; _manifest_history/<dump>.json for the refresh mart
+    why: "dbt needs unique node names (verified constraint); numbers need homes in the same breath (REC accepted)"
+  - date: 2026-11-06
+    ruling: naming_and_layout — environment / layer_source / table mirrored on disk; dbt schema <layer>_<source>; plural tables, singular structs, plural aliases; a name never repeats across layers
+    why: "owner, verbatim in naming_and_layout.reasoning: the BigQuery pattern atz-data-hub-prd.cleansed_musicbrainz.artists, adopted here"
+  - date: 2026-11-06
+    ruling: layer_contracts (second ruling) — cleansed = raw table deduplicated, names cleaned, data quality; staging = logic and header+detail joins with new names, dimensions folded in; not every table in every layer; modeled focused on cross-domain joins and modeling; the audit's name-based parity replaced by dbt row-count tests per declared pair
+    why: "owner, verbatim in layer_contracts.reasoning; played back and confirmed"
+  - date: 2026-11-06
+    ruling: environments_and_branches — dev and prd as dbt targets and data roots; main = knowledge base + orchestrator + dev line; protected prd branch promoted from main by PR
+    why: "owner: DEV and PRD branches with this repo as the knowledge base and primary orchestrator (REC accepted: same repo)"
