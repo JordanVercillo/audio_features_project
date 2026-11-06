@@ -115,7 +115,8 @@ approach:
     layer_contracts:
       choice: >
         ingest: one folder per allowlisted table under data/<environment>/ingest/musicbrainz/,
-        the dump's singular table name, column names exactly as in the dump, EVERY column a
+        plus manifest_history written by the fetch (see manifest), the dump's singular table
+        name, column names exactly as in the dump, EVERY column a
         STRING (UTF-8) exactly as read from the tab-separated file; the one allowed change is
         \N → null. Nothing is cast, trimmed, dropped or added. Plus _manifest.json in the
         source folder. cleansed: the raw table, one model per table that downstream reads, named
@@ -389,7 +390,7 @@ tasks:
       Mermaid diagram of sources → five layers → dashboard and site, with the Spotify and audio
       feature joins drawn as later slices. CLAUDE.md ground rules 1 and 2 and its Map change
       from "notebooks, one per layer hop" and data/<layer>/<table>/ to dbt models under
-      models/<layer>/ and data/<environment>/<layer>/<source>/<table>/; README.md and
+      models/<layer>/<source>/ and data/<environment>/<layer>/<source>/<table>/; README.md and
       pyproject.toml say the same in their one-line descriptions.
   task_2:
     name: Stand up the engine — Spark session, dbt project, package skeleton (Phase 2, slice 1)
@@ -410,8 +411,8 @@ tasks:
       two folders → `uv run dbt parse` fails with the duplicate-name error; the aliased pair
       (cleansed_musicbrainz__artists.sql, staging_musicbrainz__artists_with_types.sql, say) →
       `dbt build` writes both folders under data/dev/ with bare table names and
-      `dbt show --inline "select 1 from {{ ref('cleansed_musicbrainz__artists') }}"` resolves
-      the relation cleansed_musicbrainz.artists (no target-schema prefix).
+      `dbt compile --inline "select 1 from {{ ref('cleansed_musicbrainz__artists') }}"` prints
+      compiled SQL naming cleansed_musicbrainz.artists (no target-schema prefix).
   task_3:
     name: The weekly fetch — scripts/fetch_musicbrainz.py and the table allowlist (Phase 2, slice 2)
     details: |
@@ -423,8 +424,8 @@ tasks:
       run the fetch with --base-url file://<tmp> against a synthetic LATEST, SHA256SUMS and
       three tiny archives, then audit_warehouse.py --root <tmp> --offline (subprocess, as
       tests/test_audit_contract.py does) → NO_DATA false, NO_MANIFEST false, inventory.dump
-      equals the synthetic LATEST, the ingest table names equal the allowlist's (broken by
-      writing a manifest with the wrong dump); (b) the ingest contract: every column of every
+      equals the synthetic LATEST, the ingest table names equal the allowlist's plus
+      manifest_history (broken by writing a manifest with the wrong dump); (b) the ingest contract: every column of every
       written Parquet is a pyarrow string and the column list equals the allowlist entry's
       (broken by casting one column); (c) resume: a partial archive on disk plus a fake Range
       opener → sha256 verifies after resume (broken by corrupting the partial); (d) atomic
@@ -451,9 +452,10 @@ tasks:
       tracks_with_recordings, areas_with_countries, PROPOSED), structs singular. dbt tests:
       unique + not_null on every key, relationships on every foreign key, accepted_values on
       enums, the row-count tests per declared pair, the quarantine ceiling. A synthetic ingest
-      fixture in tests/test_dbt_synthetic_build.py: every allowlisted table, 3–5 rows each,
-      including one row that fails a cast, one duplicate primary key and one may_be_empty table
-      with zero rows, written by pytest to tmp_path with pyarrow; `dbt build --vars
+      fixture in tests/test_dbt_synthetic_build.py: every allowlisted table plus a one-row
+      manifest_history, 3–5 rows each, including one row that fails a cast, one duplicate
+      primary key and one may_be_empty table with zero rows, written by pytest to tmp_path with
+      pyarrow; `dbt build --vars
       '{data_root: <tmp_path>}' --target dev`; asserts the bad row is in the _quarantine folder
       with failed_column, failure_reason, source_batch, quarantined_at, the duplicate collapses
       to one cleansed row, every declared pair's row-count test passes, and the audit --root
