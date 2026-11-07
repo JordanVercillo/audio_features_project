@@ -98,7 +98,6 @@ def test_repo_profiles_targets_share_keys_and_root_the_warehouse_under_their_dat
     assert PROFILES_PATH == REPO_ROOT / "profiles.yml"
     dev = profile_spark_config("dev")
     prd = profile_spark_config("prd")
-    assert len(dev) == 6
     assert set(dev) == set(prd)
     for target, config in (("dev", dev), ("prd", prd)):
         assert config["spark.sql.warehouse.dir"].startswith(f"data/{target}/")

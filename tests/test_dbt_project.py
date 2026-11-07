@@ -14,6 +14,7 @@ dir, so nothing lands in the repo. No network: every model is `select ... from v
 """
 from __future__ import annotations
 
+import json
 import re
 import shutil
 import subprocess
@@ -126,3 +127,12 @@ def test_build_writes_bare_tables_under_layer_source_and_overwrites(dbt_project:
                     f"select count(*) as artist_count from {REF_ARTISTS}")
     assert shown.returncode == 0, shown.stdout + shown.stderr
     assert re.search(r"\|\s*3\s*\|", shown.stdout), shown.stdout
+
+    # The data_root var is the seam task_4's synthetic-build test will use: a build pointed
+    # elsewhere lands there, under the same <layer>/<source>/<alias> path, and not under data/.
+    custom_root = dbt_project / "custom_root"
+    moved = run_dbt(dbt_project, "build", "--vars", json.dumps({"data_root": str(custom_root)}))
+    assert moved.returncode == 0, moved.stdout + moved.stderr
+    assert list((custom_root / "cleansed" / "musicbrainz" / "artists").glob("part-*.parquet"))
+    assert list((custom_root / "staging" / "musicbrainz" / "artists_with_types").glob("part-*.parquet"))
+    assert not (custom_root / "data").exists()

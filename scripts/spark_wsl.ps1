@@ -57,8 +57,10 @@ $ErrorActionPreference = 'Stop'
 
 function Test-Distro {
     # Exit-code probe rather than parsing `wsl --list`. Also starts the distro if it was
-    # Stopped, which is exactly what we want.
-    & wsl.exe -d $Distro -e true 2>$null
+    # Stopped, which is exactly what we want. wsl.exe reports a missing distro on STDOUT (in
+    # UTF-16), and a PowerShell function returns everything it emits, so that text must be
+    # discarded or the caller's `-not (...)` sees a non-empty array and carries on.
+    $null = & wsl.exe -d $Distro -e true *> $null
     return ($LASTEXITCODE -eq 0)
 }
 

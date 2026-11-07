@@ -199,13 +199,15 @@ PY
 # `uv run <args>` in the repo, in THIS venv. The command line arrives base64-encoded in
 # SPARK_WSL_CMD_B64 because PowerShell 5.1 mangles embedded quotes on the way to a native
 # command; `eval set --` then applies bash's own word splitting, so quoted -c payloads survive.
+# --frozen: `uv run` would otherwise relock and sync implicitly, writing uv.lock from Linux
+# through /mnt/c; the lock is written on Windows only (`ensure` has the same rule).
 cmd_run() {
   [ -x "$VENV/bin/python" ] || { bad "no venv at $VENV — run: scripts\\spark_wsl.ps1 -Setup"; return 127; }
   [ -n "${SPARK_WSL_CMD_B64:-}" ] || { bad "nothing to run"; return 2; }
   local cmdline
   cmdline=$(printf '%s' "$SPARK_WSL_CMD_B64" | base64 -d)
   eval "set -- $cmdline"
-  cd "$REPO" && exec "$UV" run "$@"
+  cd "$REPO" && exec "$UV" run --frozen "$@"
 }
 
 case "${1:-check}" in

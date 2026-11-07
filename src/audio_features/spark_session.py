@@ -98,12 +98,19 @@ def build_spark(
 ):
     """Return the configured local SparkSession for one environment.
 
-    overrides are extra `.config()` pairs applied after the profile's (a test points the warehouse
-    and the metastore at tmp_path this way). ui=True serves the Spark UI at http://localhost:4040;
-    under WSL2 localhost forwards, so it opens in the Windows browser. verbose=True prints which
-    stale overrides were dropped, if any.
+    overrides are extra `.config()` pairs applied LAST, after the profile's and after the host
+    defaults below (a test points the warehouse and the metastore at tmp_path this way; a caller
+    can move the Linux scratch dir). ui=True serves the Spark UI at http://localhost:4040; under
+    WSL2 localhost forwards, so it opens in the Windows browser. verbose=True prints which stale
+    overrides were dropped, if any.
     """
     config = profile_spark_config(environment)
+    if _IS_WINDOWS:
+        # Windows-only tax: a fresh Python process per task. Linux keeps the default (reuse on);
+        # verified on both that UDFs pass either way once the profile's loopback bind is in place.
+        config.setdefault("spark.python.worker.reuse", "false")
+    else:
+        config.setdefault("spark.local.dir", LINUX_SCRATCH_DIR)
     config.update(overrides or {})
 
     dropped = _scrub_foreign_spark_home()
@@ -124,12 +131,6 @@ def build_spark(
     )
     for key, value in config.items():
         builder = builder.config(key, value)
-    if _IS_WINDOWS:
-        # Windows-only tax: a fresh Python process per task. Linux keeps the default (reuse on);
-        # verified on both that UDFs pass either way once the profile's loopback bind is in place.
-        builder = builder.config("spark.python.worker.reuse", "false")
-    else:
-        builder = builder.config("spark.local.dir", LINUX_SCRATCH_DIR)
 
     spark = builder.getOrCreate()
     spark.sparkContext.setLogLevel("ERROR")
