@@ -7,7 +7,7 @@ allowed-tools: [Read, Edit, Write, Bash, PowerShell, Skill]
 
 Distil THIS conversation into the repo's memory: a map, not a transcript. `/resume` reads what
 you write here, so write for a cold reader, and write the ➡️ NEXT ACTION as its instructions.
-This copy is the repo's own. What the repo regenerates before a commit: nothing yet (Phase 1); from Phase 2, `uv.lock` via `uv lock` after a dependency change, and notebook outputs are never committed stale (re-run or strip). The site page is republished in `webresume`, not here. The memory's shape and budgets are the repo's
+This copy is the repo's own. What the repo regenerates before a commit: nothing yet (Phase 1); from Phase 2, `uv.lock` via `uv lock` after a dependency change, and dbt's `target/` and `logs/` are never committed. The site page is republished in `webresume`, not here. The memory's shape and budgets are the repo's
 (`CLAUDE.md`, the protocol paragraph in `notes/PROJECT_CONTEXT.md`); read them before editing.
 
 0. **Session review.** Read the session brief: the newest open file in

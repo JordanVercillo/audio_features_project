@@ -32,7 +32,7 @@ You are an audit agent. Run the validator, then report; no design opinions.
    - `DUMP_STALE` [WARNING] — the loaded dump (`data/ingest/_manifest.json`) is not the `LATEST` on data.metabrainz.org; the weekly refresh is due before any analysis is reported
    - `NO_MANIFEST` [WARNING] — an ingest layer exists but no `_manifest.json` names its dump; freshness cannot be judged until the ingest writes one
    - `LAYER_MISSING` [WARNING] — a later layer exists while an earlier one is absent; layers are rebuilt in order, so the missing one blocks the ones above it
-   - `LAYER_PARITY` [WARNING] — a table's row count drops by more than the threshold (default 20%) between adjacent layers; either the drop is explained in the notebook or it is a defect
+   - `LAYER_PARITY` [WARNING] — a table's row count drops by more than the threshold (default 20%) between adjacent layers; either the drop is explained in the dbt model's description or it is a defect (retired in Phase 2 when names stop repeating across layers; the dbt row-count tests take over)
 
 If the script itself errors, report the raw error and stop; do not guess. Return only the
 formatted block, no commentary.

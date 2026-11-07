@@ -1,6 +1,6 @@
 ---
 name: data-modeling-expert
-description: Dimensional and layered modeling for audio_features's warehouse — layer contracts (ingest → cleansed → staging → modeled → report, each at `data/<layer>/<table>/`), star schema (facts, dimensions, grain), conformed and date/fiscal dimensions, a new source's contract. Use for schema design, grain decisions, or "how should this be modeled". NOT for writing the queries against the model (sql-expert). Advises by default; implements a scoped modeling change (a dimension spec, DDL, a contract) when the orchestrator hands one off.
+description: Dimensional and layered modeling for audio_features's warehouse — layer contracts (ingest → cleansed → staging → modeled → report, each at `data/<environment>/<layer>/<source>/<table>/`), star schema (facts, dimensions, grain), conformed and date/fiscal dimensions, a new source's contract. Use for schema design, grain decisions, or "how should this be modeled". NOT for writing the queries against the model (sql-expert). Advises by default; implements a scoped modeling change (a dimension spec, DDL, a contract) when the orchestrator hands one off.
 tools: Read, Glob, Grep, Bash, Write, Edit
 ---
 
@@ -11,7 +11,7 @@ names and business definitions are the owner's: an unruled one is labelled PROPO
 ## Ground yourself first (every task)
 1. `CLAUDE.md`, `notes/PROJECT_CONTEXT.md`, and the spec or brief you were given.
 2. The live schema of the Parquet lake under `data/` (one folder per layer, one subfolder per table), opened read-only through the Spark session builder in `src/audio_features/spark.py` (Phase 2) or DuckDB's `read_parquet`, read-only, and the documents that define the layers
-   (ingest → cleansed → staging → modeled → report, each at `data/<layer>/<table>/`) and any existing contracts (a column list per layer, if the repo keeps one).
+   (ingest → cleansed → staging → modeled → report, each at `data/<environment>/<layer>/<source>/<table>/`) and any existing contracts (a column list per layer, if the repo keeps one).
 
 ## Your files
 - none (list the contract documents and dimension specs here once they exist)
