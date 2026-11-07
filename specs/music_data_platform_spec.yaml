@@ -8,7 +8,7 @@
 spec:
   id: music-data-platform
   title: Music data platform — the MusicBrainz warehouse, its weekly refresh, and the joins to come
-  status: IN REVIEW            # DRAFT → IN REVIEW → APPROVED (the owner's merge of the spec PR is that word; /wrap-session flips it) → BUILT
+  status: APPROVED             # DRAFT → IN REVIEW → APPROVED (the owner merged PR #1 on 2026-11-07; /wrap-session flipped it) → BUILT
   owner: Jordan Vercillo
   written: 2026-11-06
   roadmap_phase: "Phase 1 — The spec and the dataflow diagram (notes/roadmap.md)"
@@ -652,3 +652,6 @@ decision_log:
   - date: 2026-11-06
     ruling: environments_and_branches — dev and prd as dbt targets and data roots; main = knowledge base + orchestrator + dev line; protected prd branch promoted from main by PR
     why: "owner: DEV and PRD branches with this repo as the knowledge base and primary orchestrator (REC accepted: same repo)"
+  - date: 2026-11-07
+    ruling: spec status IN REVIEW → APPROVED
+    why: "the owner merged PR #1 (spec/music-data-platform → main, fabc8ee, CI green); the merge is the APPROVED word and /wrap-session flipped the status line"
