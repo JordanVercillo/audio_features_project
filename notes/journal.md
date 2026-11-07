@@ -30,3 +30,44 @@ failed on its first run.
 
 > For a dump's contents, read the exporter's own table lists; the schema docs describe the
 > database, not the export.
+
+## #3 — 2026-11-07 — Spark re-roots a relative table `location` under the database, not the cwd
+
+The first `dbt build` with `+location_root: data/<target>/cleansed/musicbrainz` passed (PASS=2)
+and wrote the tables to `data/dev/spark-warehouse/cleansed_musicbrainz.db/data/dev/cleansed/...`.
+**The realization:** `SessionCatalog.makeQualifiedTablePath` joins a relative table location to
+the database's location (`<warehouse.dir>/<schema>.db/`), while `spark.sql.warehouse.dir` and
+Derby's `databaseName` resolve against the working directory; and `dbt_project.yml` has no
+project-root variable, only `flags.PROFILES_DIR`, which is the repo root because `profiles.yml`
+is committed there. A relative path is the right literal for two of the three settings and the
+wrong one for the third.
+
+> "It built" is not "it landed where the spec says": assert the files' path after the first
+> build, and check which base each engine setting resolves against before choosing relative.
+
+## #4 — 2026-11-07 — a moved checkout keeps the old venv's launchers, so `uv run pytest` ran another repo
+
+The repo moved from `audio_features` to `audio_features_project` on 2026-11-06 with its `.venv`.
+`uv run pytest` kept passing — the three audit tests need nothing from the venv — until the
+new tests imported the package and failed with `ModuleNotFoundError`. **The realization:** a
+venv's `Scripts/*.exe` launchers embed the absolute path of the interpreter they were generated
+for; `pytest.exe` still pointed at `C:\Users\jverc\audio_features\.venv`, which still existed,
+so every `uv run pytest` had been running the OLD checkout's Python. `dbt.exe`, generated after
+the move, was fine. `uv sync --reinstall` regenerates them.
+
+> After moving or copying a checkout, `uv sync --reinstall`; and a tool that passes
+> suspiciously well is worth one `sys.executable` print.
+
+## #5 — 2026-11-07 — in WSL, `/tmp` is RAM and vanishes between launcher calls; the rc files belong to another repo
+
+A `dbt build --vars '{data_root: /tmp/...}'` run through the launcher passed, and the next call
+could list nothing: WSL's `/tmp` is tmpfs and the idle distro is torn down between
+`wsl.exe` invocations. Separately, `~/.profile` and `~/.bashrc` export
+`UV_PROJECT_ENVIRONMENT=~/.venvs/va-wsl` for vercilloanalytics, so a bare `uv run` in this repo
+from an interactive WSL shell lands in that repo's venv. **The realization:** on this machine,
+WSL state that must outlive one command goes on `/mnt/c` or under `$HOME`, never `/tmp`; and a
+per-repo venv variable is set per process by the repo's own launcher, never exported globally
+(the global export was another repo's convenience and is this repo's hazard).
+
+> Treat WSL as a fresh process each call: durable paths on `/mnt/c` or `$HOME`, environment set
+> by the launcher, nothing assumed from the login shell.
