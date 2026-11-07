@@ -1,0 +1,63 @@
+# dbt_project.yml — the dbt project for audio_features (spec: transformation_engine,
+# naming_and_layout, environments_and_branches).
+#
+# One SQL model per table at models/<layer>/<source>/<layer>_<source>__<table>.sql, aliased to
+# the bare table with config(alias='<table>'), so the relation is <layer>_<source>.<table>.
+# The folder tree below IS the layer/source contract: each source folder sets its +schema
+# (returned verbatim by macros/generate_schema_name.sql) and its +location_root, so a model's
+# Parquet lands at <data_root>/<layer>/<source>/<alias>/ — the on-disk mirror of
+# project.layer_source.table. Ingest has no folder: the fetch script writes it, not dbt.
+#
+# data_root: dbt renders this file with `target`, `flags` and CLI vars in context, so the
+# default is <project dir>/data/<target>/ (data/dev/, data/prd/) and a test redirects a build
+# with
+#   dbt build --vars '{data_root: <tmp_path>}'
+# The default lives in the var() call, not in a top-level vars: block — dbt does not render
+# that block at load time, so a `target`-dependent default there would not work.
+#
+# The default is ABSOLUTE on purpose: Spark resolves a RELATIVE table `location` against the
+# table's database location (<warehouse.dir>/<schema>.db/), not the working directory, so a
+# relative root would bury every table under spark-warehouse/. dbt exposes no project-root
+# variable here (flags.PROJECT_DIR is set only when --project-dir is passed), but
+# flags.PROFILES_DIR is the directory dbt found profiles.yml in, and this project commits
+# profiles.yml at the repo root, so it IS the project root, rendered per host (C:\... on
+# Windows, /mnt/c/... in WSL).
+
+name: audio_features
+version: "0.1.0"
+profile: audio_features
+
+model-paths: ["models"]
+macro-paths: ["macros"]
+
+# dbt's own output, all gitignored (see .gitignore → Rebuildable artifacts).
+target-path: target
+clean-targets: [target, dbt_packages, logs]
+
+flags:
+  # Local Spark on a laptop has no telemetry to give; this also stops dbt writing its
+  # tracking cookie (.user.yml) into the repo root on every run.
+  send_anonymous_usage_stats: false
+
+models:
+  audio_features:
+    +materialized: table
+    +file_format: parquet
+    cleansed:
+      musicbrainz:
+        +schema: cleansed_musicbrainz
+        +location_root: "{{ var('data_root', flags.PROFILES_DIR ~ '/data/' ~ target.name) }}/cleansed/musicbrainz"
+    staging:
+      musicbrainz:
+        +schema: staging_musicbrainz
+        +location_root: "{{ var('data_root', flags.PROFILES_DIR ~ '/data/' ~ target.name) }}/staging/musicbrainz"
+    # modeled and report carry the data DOMAIN in the source slot (naming_and_layout):
+    # they join MusicBrainz, Spotify and audio features, so no single source names them.
+    modeled:
+      music:
+        +schema: modeled_music
+        +location_root: "{{ var('data_root', flags.PROFILES_DIR ~ '/data/' ~ target.name) }}/modeled/music"
+    report:
+      music:
+        +schema: report_music
+        +location_root: "{{ var('data_root', flags.PROFILES_DIR ~ '/data/' ~ target.name) }}/report/music"

@@ -12,6 +12,10 @@ metastore_db/
 derby.log
 outputs/
 *.duckdb
+# dbt's own output (dbt_project.yml -> target-path, clean-targets)
+target/
+logs/
+dbt_packages/
 
 # Python
 __pycache__/
