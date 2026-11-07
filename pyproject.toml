@@ -1,5 +1,6 @@
-# pyproject.toml — uv is the source of truth (uv.lock pins the graph). This is an application,
-# not an installable library: modules import as `audio_features.<x>` from src/ (Phase 2).
+# pyproject.toml — uv is the source of truth (uv.lock pins the graph). The package under src/ is
+# installed editable into the venv (uv_build), so `uv run python`, `uv run dbt` and pytest all
+# import `audio_features.<x>` the same way; scripts/ stay single-file tools run through `uv run`.
 [project]
 name = "audio-features"
 version = "0.1.0"
@@ -9,18 +10,25 @@ readme = "README.md"
 # pyspark 3.5.x predates Python 3.12+ quirks on Windows workers; both hosts stay on 3.11 (/spark-env).
 requires-python = ">=3.11,<3.12"
 dependencies = [
-    "pyarrow>=14.0.0",   # the Parquet engine; every layer is Parquet
+    "dbt-core~=1.12.6",          # the transformation engine; the spec pins the 1.12.x line
+    "dbt-spark[session]~=1.11.0", # the adapter; `session` runs models in-process on local Spark
+    "pyarrow>=14.0.0",            # the Parquet engine; every layer is Parquet
+    "pyspark==3.5.6",             # the engine itself (the wheel bundles Spark); exact, both hosts
+    "pyyaml>=6",                  # spark_session.py reads profiles.yml; the scripts parse YAML too
 ]
 
 [dependency-groups]
 dev = [
     "pytest>=8.0",
     "ruff>=0.6",
-    "pyyaml>=6",
 ]
 
+[build-system]
+requires = ["uv_build>=0.8,<0.12"]
+build-backend = "uv_build"
+
 [tool.uv]
-package = false
+package = true
 
 [tool.ruff]
 line-length = 100
