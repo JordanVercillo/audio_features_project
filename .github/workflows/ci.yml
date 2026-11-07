@@ -11,6 +11,11 @@ jobs:
       - uses: astral-sh/setup-uv@v5
         with:
           python-version: "3.11"
+      # Spark 3.5 needs a JDK (8/11/17); the dbt tests start a local SparkSession.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
       - run: uv sync
       - run: uv run scripts/harness_guards.py
       - run: uv run ruff check .

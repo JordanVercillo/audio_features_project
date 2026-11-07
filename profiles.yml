@@ -1,0 +1,62 @@
+# profiles.yml — committed on purpose: the `session` method runs Spark in-process, so there is
+# no host, no credential and no secret here, only Spark settings. dbt picks this file up from
+# the working directory before ~/.dbt/, and `uv run dbt` always runs from the repo root.
+#
+# One home for the Spark settings (spec: environments_and_branches, transformation_engine).
+# dbt-spark's session method builds its SparkSession as `.enableHiveSupport()` plus one
+# `.config(k, v)` per entry under server_side_parameters; src/audio_features/spark_session.py
+# reads the same block with yaml.safe_load and applies the same pairs. CONTRACT: every value
+# under server_side_parameters is a plain literal — no Jinja, no env_var() — because the
+# package reads this file as YAML, not through dbt.
+#
+# Why each key:
+#   host            required by dbt-spark's credentials even for `session`; it is never dialled.
+#   schema          the FALLBACK schema only: every model folder sets +schema, and
+#                   macros/generate_schema_name.sql returns that verbatim, so this value is used
+#                   solely for a model that forgot its folder config. Named after the target so
+#                   such a stray table announces where it came from (dev.x, prd.x).
+#   warehouse.dir   where Spark would put a table with no explicit location: under the target's
+#                   data root, so nothing ever lands outside data/<target>/.
+#   ConnectionURL   the Derby metastore, one database PER TARGET under the gitignored
+#                   metastore_db/, so dev and prd never share a catalog. Derby allows one JVM
+#                   at a time per database: one build at a time, one environment at a time.
+#   allowNonEmptyLocationInCTAS
+#                   the table materialization DROPs and re-CREATEs; dropping an external table
+#                   keeps its files, so the second build's CTAS meets a non-empty directory,
+#                   which Spark 3.5 refuses without this. With it the CTAS overwrites.
+#   driver.host / bindAddress
+#                   loopback bind; load-bearing on both hosts (the Windows hostname and the WSL
+#                   NAT address both break the driver <-> worker socket).
+#   shuffle.partitions
+#                   200 is a cluster default; 8 fits a laptop and the dump's sizes.
+#
+# Relative paths (warehouse dir, Derby databaseName) on purpose: the one literal that is valid
+# on both C:\... (Windows) and /mnt/c/... (WSL), because dbt always runs from the repo root.
+
+audio_features:
+  target: dev
+  outputs:
+    dev:
+      type: spark
+      method: session
+      host: localhost
+      schema: dev
+      server_side_parameters:
+        spark.sql.warehouse.dir: data/dev/spark-warehouse
+        spark.hadoop.javax.jdo.option.ConnectionURL: "jdbc:derby:;databaseName=metastore_db/dev;create=true"
+        spark.sql.legacy.allowNonEmptyLocationInCTAS: "true"
+        spark.driver.host: 127.0.0.1
+        spark.driver.bindAddress: 127.0.0.1
+        spark.sql.shuffle.partitions: "8"
+    prd:
+      type: spark
+      method: session
+      host: localhost
+      schema: prd
+      server_side_parameters:
+        spark.sql.warehouse.dir: data/prd/spark-warehouse
+        spark.hadoop.javax.jdo.option.ConnectionURL: "jdbc:derby:;databaseName=metastore_db/prd;create=true"
+        spark.sql.legacy.allowNonEmptyLocationInCTAS: "true"
+        spark.driver.host: 127.0.0.1
+        spark.driver.bindAddress: 127.0.0.1
+        spark.sql.shuffle.partitions: "8"
